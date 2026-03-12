@@ -318,6 +318,28 @@ function gateMarkup() {
   `;
 }
 
+function gateLettersMarkup() {
+  return state.gateLetters
+    .map(
+      (item) => `
+        <span
+          class="gate-letter ${item.state ? `is-${item.state}` : ''}"
+          style="left:${item.x}%;top:${item.y}%;--rot:${item.rotation}deg;transform:translate(-50%, -50%) rotate(${item.rotation}deg) scale(${item.scale});animation-delay:${item.delay}s;"
+        >${item.char}</span>
+      `
+    )
+    .join('');
+}
+
+function syncGateVisuals() {
+  const gateLetters = document.querySelector('.gate-letters');
+  if (!gateLetters) return;
+
+  gateLetters.classList.toggle('is-success', state.gateAttempt === 'success');
+  gateLetters.classList.toggle('is-error', state.gateAttempt === 'error');
+  gateLetters.innerHTML = gateLettersMarkup();
+}
+
 function entranceMarkup() {
   return `
     <section class="entrance is-staged" id="entrance-stage">
@@ -665,7 +687,7 @@ function bindGateListener() {
       if (gateKeyBuffer === ACCESS_CODE) {
         state.gateAttempt = 'success';
         state.gateLetters = state.gateLetters.map((item) => ({ ...item, state: 'success' }));
-        render();
+        syncGateVisuals();
         if (gateAttemptTimer) clearTimeout(gateAttemptTimer);
         gateAttemptTimer = setTimeout(() => {
           state.view = 'entrance';
@@ -676,13 +698,13 @@ function bindGateListener() {
       } else if (gateKeyBuffer) {
         state.gateAttempt = 'error';
         state.gateLetters = state.gateLetters.map((item) => ({ ...item, state: 'error' }));
-        render();
+        syncGateVisuals();
         if (gateAttemptTimer) clearTimeout(gateAttemptTimer);
         gateAttemptTimer = setTimeout(() => {
           state.gateAttempt = 'idle';
           state.gateLetters = [];
           gateKeyBuffer = '';
-          if (state.view === 'gate') render();
+          if (state.view === 'gate') syncGateVisuals();
         }, 720);
       }
       if (gateKeyBuffer === ACCESS_CODE) gateKeyBuffer = '';
@@ -693,7 +715,7 @@ function bindGateListener() {
       gateKeyBuffer = gateKeyBuffer.slice(0, -1);
       state.gateLetters = state.gateLetters.slice(0, -1);
       state.gateAttempt = 'idle';
-      render();
+      syncGateVisuals();
       return;
     }
 
@@ -717,7 +739,7 @@ function bindGateListener() {
       if (gateKeyBuffer === ACCESS_CODE) {
         unlockAchievement('entry_rosie');
       }
-      render();
+      syncGateVisuals();
     }
   };
 
@@ -1006,15 +1028,18 @@ function bindConstellationMotion() {
 
     const baseTurn = (Math.PI * 2) / 86;
     const selectedLayout = state.systemId ? NODE_LAYOUT[state.systemId] : state.selectedId ? NODE_LAYOUT[state.selectedId] : null;
+    const isFocused = Boolean(state.systemId || state.selectedId);
     const boosted = Date.now() < motionState.speedBoostUntil ? 1.85 : 1;
-    const speedMultiplier = (state.selectedId ? 0.16 : motionState.hoveredId ? 0.45 : 1) * boosted;
+    const speedMultiplier = (isFocused ? 0 : motionState.hoveredId ? 0.45 : 1) * boosted;
     motionState.rotationY += baseTurn * speedMultiplier * delta;
 
     const width = stage.clientWidth;
     const height = stage.clientHeight;
     const camDist = Math.max(720, width * 1.28);
-    const totalYaw = motionState.rotationY + motionState.userYaw + motionState.cursorYaw;
-    const totalPitch = 0.1 + motionState.userPitch + motionState.cursorPitch;
+    const focusCursorYaw = isFocused ? 0 : motionState.cursorYaw;
+    const focusCursorPitch = isFocused ? 0 : motionState.cursorPitch;
+    const totalYaw = motionState.rotationY + motionState.userYaw + focusCursorYaw;
+    const totalPitch = 0.1 + motionState.userPitch + focusCursorPitch;
     const cosY = Math.cos(totalYaw);
     const sinY = Math.sin(totalYaw);
     const cosX = Math.cos(totalPitch);
@@ -1090,10 +1115,11 @@ function bindConstellationMotion() {
       const focusId = state.systemId || state.selectedId;
       const focused = projectedPoints.get(focusId);
       if (focused) {
-        targetX = (width / 2 - focused.projected.x) * (state.systemId ? 0.18 : 0.08);
-        targetY = (height / 2 - focused.projected.y) * (state.systemId ? 0.14 : 0.06);
+        const centerStrength = state.systemId ? 0.9 : 1;
+        targetX = (width / 2 - focused.projected.x) * centerStrength;
+        targetY = (height / 2 - focused.projected.y) * centerStrength;
       }
-      targetZoom = state.systemId ? 1.24 : 1.08;
+      targetZoom = state.systemId ? 1.24 : 1.14;
     } else if (motionState.hoveredId) {
       targetZoom = Math.max(targetZoom, 1.02);
     }
