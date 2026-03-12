@@ -48,6 +48,65 @@ const NODE_LAYOUT = {
   'special-bad-day': { x: -230, y: 100, z: -430, size: 'medium', kind: 'letter' }
 };
 
+const SATELLITE_KIND_SEQUENCE = ['ring', 'shard', 'frame', 'crystal'];
+
+function buildChapterSystem(chapter) {
+  const content = Array.isArray(chapter.content) ? chapter.content : [];
+  const satellites = [
+    {
+      id: `${chapter.id}__overview`,
+      parentId: chapter.id,
+      type: 'satellite',
+      title: 'Overview',
+      summary: `A closer orbit around ${chapter.title}.`,
+      content: [chapter.summary, content[0] || 'This chapter is still collecting the memories that will fill it.'],
+      kind: 'ring',
+      orbitRadius: 132,
+      orbitHeight: 22,
+      orbitSpeed: 0.72,
+      phase: 0.25
+    }
+  ];
+
+  if (chapter.art) {
+    satellites.push({
+      id: `${chapter.id}__photo`,
+      parentId: chapter.id,
+      type: 'satellite',
+      title: 'Saved Snapshot',
+      summary: 'A small orbit holding onto a visual memory.',
+      content: ['A saved image from this chapter still circles here.', chapter.summary],
+      art: chapter.art,
+      kind: 'frame',
+      orbitRadius: 188,
+      orbitHeight: 14,
+      orbitSpeed: -0.48,
+      phase: 1.8
+    });
+  }
+
+  content.slice(0, 3).forEach((line, index) => {
+    satellites.push({
+      id: `${chapter.id}__note-${index + 1}`,
+      parentId: chapter.id,
+      type: 'satellite',
+      title: content.length === 1 ? 'Saved Note' : `Memory ${index + 1}`,
+      summary: 'A smaller orbit carrying one saved line.',
+      content: [line],
+      kind: SATELLITE_KIND_SEQUENCE[index % SATELLITE_KIND_SEQUENCE.length],
+      orbitRadius: 110 + index * 34 + (chapter.art ? 14 : 0),
+      orbitHeight: index % 2 === 0 ? 18 : -18,
+      orbitSpeed: index % 2 === 0 ? 0.9 + index * 0.12 : -(0.78 + index * 0.1),
+      phase: 0.9 + index * 1.45
+    });
+  });
+
+  return satellites;
+}
+
+const CHAPTER_SYSTEMS = new Map(YEAR_CHAPTERS.map((chapter) => [chapter.id, buildChapterSystem(chapter)]));
+const satelliteById = new Map(Array.from(CHAPTER_SYSTEMS.values()).flat().map((item) => [item.id, item]));
+
 const NETWORK_CONNECTIONS = [
   ['year-2026', 'special-gallery'],
   ['year-2026', 'year-2027'],
@@ -70,6 +129,7 @@ NETWORK_CONNECTIONS.forEach(([from, to]) => {
 const state = {
   view: 'gate',
   selectedId: null,
+  systemId: null,
   panel: 'vault',
   status: '',
   unlockedFlash: new Set(),
@@ -80,7 +140,9 @@ const state = {
   cometVisible: false,
   roseMode: false,
   wishMode: false,
-  novaFlash: false
+  novaFlash: false,
+  gateLetters: [],
+  gateAttempt: 'idle'
 };
 
 let unlockedSpecials = loadStoredUnlocks();
@@ -98,6 +160,7 @@ let motionFrame = null;
 let easterToastTimer = null;
 let cometTimer = null;
 let novaTimer = null;
+let gateAttemptTimer = null;
 const motionState = {
   rotationY: 0,
   cursorYaw: 0,
@@ -185,6 +248,18 @@ function isUnlocked(item) {
   return unlockedSpecials.has(item.id);
 }
 
+function detailById(id) {
+  return sectionById.get(id) || satelliteById.get(id) || null;
+}
+
+function isDetailUnlocked(item) {
+  if (!item) return false;
+  if (item.type === 'satellite') {
+    return isUnlocked(sectionById.get(item.parentId));
+  }
+  return isUnlocked(item);
+}
+
 function lockLabel(item) {
   if (isUnlocked(item)) return 'Open';
   return item.unlockLabel || 'Locked';
@@ -215,7 +290,21 @@ function gateMarkup() {
     <section class="bypass-gate" aria-label="Entry gate">
       <div class="void-glow" aria-hidden="true"></div>
       <div class="gate-particles" aria-hidden="true">${particlesMarkup(54)}</div>
-      <p class="gate-copy">nothing to see here.</p>
+      <div class="gate-letters ${state.gateAttempt === 'success' ? 'is-success' : state.gateAttempt === 'error' ? 'is-error' : ''}" aria-hidden="true">
+        ${state.gateLetters
+          .map(
+            (item) => `
+              <span
+                class="gate-letter ${item.state ? `is-${item.state}` : ''}"
+                style="left:${item.x}%;top:${item.y}%;--rot:${item.rotation}deg;transform:translate(-50%, -50%) rotate(${item.rotation}deg) scale(${item.scale});animation-delay:${item.delay}s;"
+              >${item.char}</span>
+            `
+          )
+          .join('')}
+      </div>
+      <div class="gate-copy">
+        <p>nothing to see here.</p>
+      </div>
       <footer class="completion-progress" aria-label="Website completion progress">
         <div class="completion-progress__meta">
           <span>completion</span>
@@ -355,10 +444,78 @@ function nodeMarkup(item) {
   `;
 }
 
+function systemNodeMarkup(chapterId) {
+  const satellites = CHAPTER_SYSTEMS.get(chapterId) || [];
+  const chapter = sectionById.get(chapterId);
+  const unlocked = isUnlocked(chapter);
+
+  return satellites
+    .map(
+      (item) => `
+        <button
+          class="memory-node memory-node--satellite ${unlocked ? 'is-unlocked' : 'is-locked'} size-small kind-${item.kind} ${state.selectedId === item.id ? 'is-selected' : ''}"
+          type="button"
+          data-satellite-id="${item.id}"
+          data-open-id="${unlocked ? item.id : ''}"
+          ${unlocked ? '' : 'aria-disabled="true"'}
+        >
+          <span class="memory-node__shape" aria-hidden="true">
+            <span class="memory-node__core"></span>
+          </span>
+          <span class="memory-node__label">
+            <strong>${item.title}</strong>
+            <small>${chapter?.title || 'Chapter orbit'}</small>
+          </span>
+        </button>
+      `
+    )
+    .join('');
+}
+
+function chapterSystemPanelMarkup() {
+  if (!state.systemId) return '';
+  const chapter = sectionById.get(state.systemId);
+  const satellites = CHAPTER_SYSTEMS.get(state.systemId) || [];
+  if (!chapter) return '';
+
+  return `
+    <section class="chapter-system overlay-panel overlay-panel--system" aria-label="Focused chapter system">
+      <div class="chapter-system__header">
+        <div>
+          <p class="eyebrow">Focused System</p>
+          <h2>${chapter.title}</h2>
+          <p class="subtle">Smaller planets orbit this chapter now. Click a planet to open it, or open the main chapter directly.</p>
+        </div>
+        <button class="ghost-btn" type="button" data-close-system="true">Back Out</button>
+      </div>
+      <div class="chapter-system__actions">
+        <button class="archive-index__item is-unlocked chapter-system__core-btn" type="button" data-open-detail="${chapter.id}">
+          <span class="archive-index__meta">${chapter.year}</span>
+          <strong>Open Main Chapter</strong>
+          <small>${chapter.summary}</small>
+        </button>
+      </div>
+      <div class="chapter-system__list">
+        ${satellites
+          .map(
+            (item) => `
+              <button class="archive-index__item is-unlocked chapter-system__item" type="button" data-open-detail="${item.id}">
+                <span class="archive-index__meta">Orbit</span>
+                <strong>${item.title}</strong>
+                <small>${item.summary}</small>
+              </button>
+            `
+          )
+          .join('')}
+      </div>
+    </section>
+  `;
+}
+
 function overlayMarkup() {
   if (!state.selectedId) return '';
-  const item = sectionById.get(state.selectedId);
-  if (!item || !isUnlocked(item)) return '';
+  const item = detailById(state.selectedId);
+  if (!item || !isDetailUnlocked(item)) return '';
   const content = Array.isArray(item.content) ? item.content : [];
   const art = item.art ? `<img class="detail-art" src="${item.art}" alt="Memory image for ${item.title}" />` : '';
 
@@ -367,7 +524,7 @@ function overlayMarkup() {
       <div class="detail-overlay__backdrop" data-close-overlay="true"></div>
       <article class="detail-overlay__panel">
         <button class="ghost-btn detail-overlay__close" type="button" data-close-overlay="true">Close</button>
-        <p class="eyebrow">${item.type === 'year' ? `Chapter ${item.year}` : 'Special Unlock'}</p>
+        <p class="eyebrow">${item.type === 'year' ? `Chapter ${item.year}` : item.type === 'satellite' ? 'Orbiting Memory' : 'Special Unlock'}</p>
         <h2>${item.title}</h2>
         <p class="subtle">${item.summary}</p>
         ${art}
@@ -399,6 +556,7 @@ function vaultMarkup() {
             ${connectionMarkup()}
             <div class="memory-nodes">
               ${sections.map((item) => nodeMarkup(item)).join('')}
+              ${state.systemId ? systemNodeMarkup(state.systemId) : ''}
             </div>
           </div>
         </div>
@@ -408,7 +566,7 @@ function vaultMarkup() {
           <div class="hero-copy">
             <p class="eyebrow">Private Timeline</p>
             <h1 id="archive-title">Constellation archive</h1>
-            <p class="subtle" id="archive-subtle">Each memory lives as a node in a drifting network. Hover to trace connections. Click to open what has already unlocked.</p>
+            <p class="subtle" id="archive-subtle">${state.systemId ? 'This chapter is expanded into its own little system. Use the orbiting planets or the right-side panel to navigate it.' : 'Each memory lives as a node in a drifting network. Hover to trace connections. Click a chapter to zoom into its system.'}</p>
             ${yearTimelineMarkup()}
           </div>
           <div class="hero-meta">
@@ -447,6 +605,8 @@ function vaultMarkup() {
           </div>
         </section>
 
+        ${chapterSystemPanelMarkup()}
+
         <section class="redeem overlay-panel overlay-panel--redeem">
           <div class="construction-banner" aria-label="Under construction notice">
             <span>Under Construction</span>
@@ -479,7 +639,7 @@ function vaultMarkup() {
       ${state.easterToast ? `<p class="easter-toast">${state.easterToast}</p>` : ''}
       ${state.novaFlash ? '<div class="nova-flash" aria-hidden="true"></div>' : ''}
 
-      <footer class="site-footer" id="site-footer">Updated every March 9.</footer>
+      <footer class="site-footer" id="site-footer">Updated here and then :D</footer>
     </section>
   `;
 }
@@ -498,29 +658,66 @@ function stopConstellationMotion() {
 }
 
 function bindGateListener() {
-  gateKeyBuffer = '';
   cleanupGateListener();
 
   gateKeyHandler = (event) => {
     if (event.key === 'Enter') {
       if (gateKeyBuffer === ACCESS_CODE) {
-        state.view = 'entrance';
+        state.gateAttempt = 'success';
+        state.gateLetters = state.gateLetters.map((item) => ({ ...item, state: 'success' }));
         render();
+        if (gateAttemptTimer) clearTimeout(gateAttemptTimer);
+        gateAttemptTimer = setTimeout(() => {
+          state.view = 'entrance';
+          state.gateAttempt = 'idle';
+          state.gateLetters = [];
+          render();
+        }, 520);
+      } else if (gateKeyBuffer) {
+        state.gateAttempt = 'error';
+        state.gateLetters = state.gateLetters.map((item) => ({ ...item, state: 'error' }));
+        render();
+        if (gateAttemptTimer) clearTimeout(gateAttemptTimer);
+        gateAttemptTimer = setTimeout(() => {
+          state.gateAttempt = 'idle';
+          state.gateLetters = [];
+          gateKeyBuffer = '';
+          if (state.view === 'gate') render();
+        }, 720);
       }
-      gateKeyBuffer = '';
+      if (gateKeyBuffer === ACCESS_CODE) gateKeyBuffer = '';
       return;
     }
 
     if (event.key === 'Backspace') {
       gateKeyBuffer = gateKeyBuffer.slice(0, -1);
+      state.gateLetters = state.gateLetters.slice(0, -1);
+      state.gateAttempt = 'idle';
+      render();
       return;
     }
 
     if (event.key.length === 1) {
-      gateKeyBuffer = `${gateKeyBuffer}${event.key.toUpperCase()}`.slice(-ACCESS_CODE.length);
+      const char = event.key.toUpperCase();
+      gateKeyBuffer = `${gateKeyBuffer}${char}`.slice(-ACCESS_CODE.length);
+      state.gateAttempt = 'idle';
+      state.gateLetters = [
+        ...state.gateLetters,
+        {
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          char,
+          x: (18 + Math.random() * 64).toFixed(2),
+          y: (18 + Math.random() * 54).toFixed(2),
+          rotation: (Math.random() * 110 - 55).toFixed(2),
+          scale: (0.88 + Math.random() * 0.72).toFixed(2),
+          delay: (Math.random() * -0.8).toFixed(2),
+          state: ''
+        }
+      ].slice(-ACCESS_CODE.length);
       if (gateKeyBuffer === ACCESS_CODE) {
         unlockAchievement('entry_rosie');
       }
+      render();
     }
   };
 
@@ -597,8 +794,8 @@ function bindGlobalSecretListener() {
 
 function openSection(id) {
   if (!id) return;
-  const section = sectionById.get(id);
-  if (!section || !isUnlocked(section)) return;
+  const section = detailById(id);
+  if (!section || !isDetailUnlocked(section)) return;
   state.selectedId = id;
   state.panel = 'vault';
   render();
@@ -606,6 +803,22 @@ function openSection(id) {
 
 function closeOverlay() {
   if (!state.selectedId) return;
+  state.selectedId = null;
+  render();
+}
+
+function focusChapterSystem(id) {
+  const chapter = sectionById.get(id);
+  if (!chapter || chapter.type !== 'year' || !isUnlocked(chapter)) return;
+  state.systemId = id;
+  state.selectedId = null;
+  state.panel = 'vault';
+  render();
+}
+
+function closeChapterSystem() {
+  if (!state.systemId) return;
+  state.systemId = null;
   state.selectedId = null;
   render();
 }
@@ -651,6 +864,14 @@ function bindConstellationMotion() {
       return { item, el, pos };
     })
     .filter(Boolean);
+  const satelliteEntries = state.systemId
+    ? (CHAPTER_SYSTEMS.get(state.systemId) || [])
+        .map((item) => {
+          const el = stage.querySelector(`.memory-node[data-satellite-id="${item.id}"]`);
+          return el ? { item, el } : null;
+        })
+        .filter(Boolean)
+    : [];
 
   const lineEntries = NETWORK_CONNECTIONS.map(([from, to]) => {
     const el = stage.querySelector(`.constellation-line[data-link-from="${from}"][data-link-to="${to}"]`);
@@ -738,6 +959,18 @@ function bindConstellationMotion() {
     });
   });
 
+  satelliteEntries.forEach(({ item, el }) => {
+    el.addEventListener('mouseenter', () => {
+      motionState.hoveredId = item.id;
+      applyNetworkHighlight();
+    });
+
+    el.addEventListener('mouseleave', () => {
+      motionState.hoveredId = null;
+      applyNetworkHighlight();
+    });
+  });
+
   function applyNetworkHighlight() {
     const hoveredId = motionState.hoveredId;
     const related = hoveredId ? neighborMap.get(hoveredId) || new Set() : new Set();
@@ -749,11 +982,17 @@ function bindConstellationMotion() {
       el.classList.toggle('is-neighbor', isNeighbor);
     });
 
+    satelliteEntries.forEach(({ item, el }) => {
+      const isHovered = item.id === hoveredId;
+      el.classList.toggle('is-hovered', isHovered);
+      el.classList.toggle('is-neighbor', Boolean(state.systemId) && item.parentId === state.systemId && hoveredId === state.systemId);
+    });
+
     lineEntries.forEach(({ from, to, el }) => {
       const active = hoveredId ? from === hoveredId || to === hoveredId : false;
       const relatedLine = hoveredId ? related.has(from) && to === hoveredId || related.has(to) && from === hoveredId : false;
       el.classList.toggle('is-active', active || relatedLine);
-      el.classList.toggle('is-dimmed', hoveredId && !active && !relatedLine);
+      el.classList.toggle('is-dimmed', (hoveredId && !active && !relatedLine) || (state.systemId && from !== state.systemId && to !== state.systemId));
     });
   }
 
@@ -766,7 +1005,7 @@ function bindConstellationMotion() {
     lastTime = time;
 
     const baseTurn = (Math.PI * 2) / 86;
-    const selectedLayout = state.selectedId ? NODE_LAYOUT[state.selectedId] : null;
+    const selectedLayout = state.systemId ? NODE_LAYOUT[state.systemId] : state.selectedId ? NODE_LAYOUT[state.selectedId] : null;
     const boosted = Date.now() < motionState.speedBoostUntil ? 1.85 : 1;
     const speedMultiplier = (state.selectedId ? 0.16 : motionState.hoveredId ? 0.45 : 1) * boosted;
     motionState.rotationY += baseTurn * speedMultiplier * delta;
@@ -793,18 +1032,39 @@ function bindConstellationMotion() {
     nodeEntries.forEach(({ item, el, pos }, index) => {
       const bob = Math.sin(time * 0.0005 + index * 0.8) * 10;
       const sway = Math.cos(time * 0.00036 + index * 0.9) * 6;
-      const point = rotatePoint({
+      const basePoint = {
         x: pos.x + sway,
         y: pos.y + bob,
         z: pos.z
-      });
+      };
+      const point = rotatePoint(basePoint);
       const projected = project(point, width, height, camDist);
-      projectedPoints.set(item.id, { projected, point });
+      projectedPoints.set(item.id, { projected, point, basePoint });
 
       const baseScale = pos.size === 'large' ? 1.1 : pos.size === 'medium' ? 0.92 : 0.8;
       const totalScale = Math.max(0.55, Math.min(1.48, baseScale * projected.scale));
       el.style.transform = `translate3d(${projected.x.toFixed(2)}px, ${projected.y.toFixed(2)}px, 0) translate(-50%, -50%) scale(${totalScale.toFixed(3)})`;
       el.style.zIndex = `${Math.round(1000 + point.z)}`;
+      el.style.opacity = state.systemId ? (item.id === state.systemId ? '1' : item.type === 'year' ? '0.18' : '0.1') : '1';
+    });
+
+    const focusedChapter = state.systemId ? projectedPoints.get(state.systemId) : null;
+    satelliteEntries.forEach(({ item, el }, index) => {
+      if (!focusedChapter) return;
+      const angle = time * 0.00055 * item.orbitSpeed + item.phase;
+      const wobble = Math.sin(time * 0.0008 + index * 1.1) * 6;
+      const basePoint = {
+        x: focusedChapter.basePoint.x + Math.cos(angle) * item.orbitRadius,
+        y: focusedChapter.basePoint.y + Math.sin(angle * 1.3 + item.phase) * item.orbitHeight + wobble,
+        z: focusedChapter.basePoint.z + Math.sin(angle) * item.orbitRadius * 0.46
+      };
+      const point = rotatePoint(basePoint);
+      const projected = project(point, width, height, camDist);
+      const totalScale = Math.max(0.48, Math.min(1.12, 0.58 * projected.scale));
+
+      el.style.transform = `translate3d(${projected.x.toFixed(2)}px, ${projected.y.toFixed(2)}px, 0) translate(-50%, -50%) scale(${totalScale.toFixed(3)})`;
+      el.style.zIndex = `${Math.round(1250 + point.z)}`;
+      el.style.opacity = '1';
     });
 
     lineEntries.forEach(({ from, to, el }) => {
@@ -817,7 +1077,9 @@ function bindConstellationMotion() {
       el.setAttribute('x2', ((b.projected.x / width) * 100).toFixed(3));
       el.setAttribute('y2', ((b.projected.y / height) * 100).toFixed(3));
       const depth = (a.point.z + b.point.z) / 2;
-      el.style.opacity = `${Math.max(0.12, Math.min(0.82, 0.34 + depth / 1000))}`;
+      const baseOpacity = Math.max(0.12, Math.min(0.82, 0.34 + depth / 1000));
+      const systemMultiplier = state.systemId && from !== state.systemId && to !== state.systemId ? 0.18 : 1;
+      el.style.opacity = `${baseOpacity * systemMultiplier}`;
     });
 
     let targetX = 0;
@@ -825,12 +1087,13 @@ function bindConstellationMotion() {
     let targetZoom = 1;
 
     if (selectedLayout) {
-      const focused = projectedPoints.get(state.selectedId);
+      const focusId = state.systemId || state.selectedId;
+      const focused = projectedPoints.get(focusId);
       if (focused) {
-        targetX = (width / 2 - focused.projected.x) * 0.08;
-        targetY = (height / 2 - focused.projected.y) * 0.06;
+        targetX = (width / 2 - focused.projected.x) * (state.systemId ? 0.18 : 0.08);
+        targetY = (height / 2 - focused.projected.y) * (state.systemId ? 0.14 : 0.06);
       }
-      targetZoom = 1.08;
+      targetZoom = state.systemId ? 1.24 : 1.08;
     } else if (motionState.hoveredId) {
       targetZoom = Math.max(targetZoom, 1.02);
     }
@@ -862,7 +1125,32 @@ function bindVaultEvents() {
         return;
       }
 
+      const item = detailById(id);
+      if (item?.type === 'year') {
+        if (state.systemId === id) {
+          openSection(id);
+          return;
+        }
+        focusChapterSystem(id);
+        return;
+      }
+
       openSection(id);
+    });
+  });
+
+  app.querySelectorAll('[data-open-detail]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (motionState.dragMoved) return;
+      const id = button.getAttribute('data-open-detail');
+      openSection(id);
+    });
+  });
+
+  app.querySelectorAll('[data-close-system]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (motionState.dragMoved) return;
+      closeChapterSystem();
     });
   });
 
@@ -1057,8 +1345,17 @@ window.addEventListener('mousemove', (event) => {
 });
 
 window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && state.selectedId) {
+  if (event.key !== 'Escape') return;
+  if (state.selectedId) {
     closeOverlay();
+    return;
+  }
+  if (state.panel === 'achievements') {
+    closeAchievements();
+    return;
+  }
+  if (state.systemId) {
+    closeChapterSystem();
   }
 });
 
