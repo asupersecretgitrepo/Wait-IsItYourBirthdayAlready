@@ -1,48 +1,144 @@
 import { REDEEM_CODES, SPECIAL_SECTIONS, STORAGE_KEY, YEAR_CHAPTERS } from './data.js';
 
 const app = document.getElementById('app');
-const ACCESS_CODE = 'BYPASS';
+const ACCESS_CODE = 'R0S1E';
 const SECRET_WORD = 'STARLIGHT';
+const KONAMI_CODE = ['ARROWUP', 'ARROWUP', 'ARROWDOWN', 'ARROWDOWN', 'ARROWLEFT', 'ARROWRIGHT', 'ARROWLEFT', 'ARROWRIGHT', 'B', 'A'];
+const ORBIT_WORD = 'ORBIT';
+const NOVA_WORD = 'NOVA';
+const WISH_WORD = 'WISH';
+const ROSE_WORD = 'ROSE';
+const ACHIEVEMENT_STORAGE_KEY = 'time_capsule_achievements';
+const EASTER_MESSAGES = [
+  'A quiet comet just crossed the archive.',
+  'The constellation noticed you looking back.',
+  'Something in the dark rearranged itself for a second.',
+  'One of the galaxies is pretending not to blink.',
+  'The archive hummed like it knew your name.',
+  'A hidden orbit clicked into place for a second.'
+];
+const ACHIEVEMENTS = [
+  { id: 'entry_rosie', label: 'Rosie Entry', hint: 'Enter the gate with the right code.' },
+  { id: 'secret_starlight', label: 'Starlight', hint: 'Type a quiet cosmic word.' },
+  { id: 'secret_orbit', label: 'Orbit', hint: 'Type the movement word.' },
+  { id: 'secret_nova', label: 'Nova', hint: 'Type the explosion word.' },
+  { id: 'secret_wish', label: 'Wish', hint: 'Type the hopeful word.' },
+  { id: 'secret_rose', label: 'Rose Tint', hint: 'Type the flower word.' },
+  { id: 'secret_konami', label: 'Stardust Mode', hint: 'Use a classic cheat code.' },
+  { id: 'star_tapper', label: 'Seven Star Taps', hint: 'Tap the hidden star seven times.' },
+  { id: 'title_tapper', label: 'Archive Blink', hint: 'Tap the main archive title five times.' },
+  { id: 'index_tapper', label: 'Wish Mode', hint: 'Tap the archive index title four times.' },
+  { id: 'subtitle_double', label: 'Double Meaning', hint: 'Double-click the hero subtitle.' },
+  { id: 'footer_tapper', label: 'March 9', hint: 'Tap the footer three times.' },
+  { id: 'shooting_star', label: 'Comet Catcher', hint: 'Catch the shooting star when it appears.' },
+  { id: 'empty_space_comet', label: 'Empty Space Comet', hint: 'Double-click empty space in the constellation.' }
+];
+const HIDDEN_SECTION_IDS = new Set(['special-playlist', 'special-miss-me', 'special-jokes', 'special-origin']);
 
-const sections = [...YEAR_CHAPTERS, ...SPECIAL_SECTIONS];
+const sections = [...YEAR_CHAPTERS, ...SPECIAL_SECTIONS].filter((item) => !HIDDEN_SECTION_IDS.has(item.id));
 const sectionById = new Map(sections.map((item) => [item.id, item]));
 
 const NODE_LAYOUT = {
-  'year-2026': { x: -180, y: 120, z: 130, size: 'large', orbit: 23 },
-  'year-2027': { x: -230, y: -30, z: -70, size: 'medium', orbit: 25 },
-  'year-2028': { x: -20, y: -190, z: 150, size: 'small', orbit: 27 },
-  'year-2029': { x: 220, y: -50, z: -120, size: 'medium', orbit: 26 },
-  'year-2030': { x: 210, y: 115, z: 120, size: 'large', orbit: 24 },
-  gallery: { x: 15, y: 220, z: -150, size: 'large', orbit: 20 },
-  'bad-day-letter': { x: -300, y: 40, z: -20, size: 'medium', orbit: 22 },
-  playlist: { x: 300, y: 55, z: 30, size: 'medium', orbit: 21 },
-  'when-you-miss-me': { x: -300, y: -115, z: 170, size: 'small', orbit: 28 },
-  'inside-jokes': { x: 300, y: -120, z: 170, size: 'small', orbit: 29 },
-  'sheep-unicorn-origin': { x: 25, y: 285, z: 170, size: 'small', orbit: 30 }
+  'year-2026': { x: -430, y: -250, z: 240, size: 'large', kind: 'orb' },
+  'year-2027': { x: 10, y: -390, z: -260, size: 'large', kind: 'crystal' },
+  'year-2028': { x: 460, y: -160, z: 170, size: 'large', kind: 'orb' },
+  'year-2029': { x: 350, y: 260, z: -340, size: 'large', kind: 'crystal' },
+  'year-2030': { x: -150, y: 380, z: 300, size: 'large', kind: 'orb' },
+  'special-gallery': { x: -520, y: 24, z: -290, size: 'medium', kind: 'frame' },
+  'special-bad-day': { x: -230, y: 100, z: -430, size: 'medium', kind: 'letter' }
 };
-const CORE_POINT = { x: 0, y: 0, z: 0 };
+
+const NETWORK_CONNECTIONS = [
+  ['year-2026', 'special-gallery'],
+  ['year-2026', 'year-2027'],
+  ['year-2026', 'special-bad-day'],
+  ['year-2027', 'year-2028'],
+  ['year-2028', 'year-2029'],
+  ['year-2029', 'year-2030'],
+  ['year-2030', 'special-gallery'],
+  ['special-gallery', 'special-bad-day']
+];
+
+const neighborMap = new Map();
+NETWORK_CONNECTIONS.forEach(([from, to]) => {
+  if (!neighborMap.has(from)) neighborMap.set(from, new Set());
+  if (!neighborMap.has(to)) neighborMap.set(to, new Set());
+  neighborMap.get(from).add(to);
+  neighborMap.get(to).add(from);
+});
 
 const state = {
   view: 'gate',
   selectedId: null,
+  panel: 'vault',
   status: '',
   unlockedFlash: new Set(),
   secretMessage: false,
-  starMessage: false
+  starMessage: false,
+  easterToast: '',
+  stardustMode: false,
+  cometVisible: false,
+  roseMode: false,
+  wishMode: false,
+  novaFlash: false
 };
 
 let unlockedSpecials = loadStoredUnlocks();
+let unlockedAchievements = loadStoredAchievements();
 let gateKeyBuffer = '';
 let gateKeyHandler = null;
 let secretTypeBuffer = '';
+let orbitTypeBuffer = '';
+let novaTypeBuffer = '';
+let wishTypeBuffer = '';
+let roseTypeBuffer = '';
+let konamiBuffer = [];
 let flashTimer = null;
 let motionFrame = null;
-let focusTimer = null;
+let easterToastTimer = null;
+let cometTimer = null;
+let novaTimer = null;
 const motionState = {
   rotationY: 0,
-  hoveringNode: false,
-  paused: false
+  cursorYaw: 0,
+  cursorPitch: 0,
+  userYaw: 0,
+  userPitch: 0,
+  dragging: false,
+  dragMoved: false,
+  lastX: 0,
+  lastY: 0,
+  hoveredId: null,
+  speedBoostUntil: 0,
+  starTapCount: 0,
+  heroTapCount: 0,
+  indexTapCount: 0,
+  footerTapCount: 0,
+  sparkTapCount: 0
 };
+
+function loadStoredAchievements() {
+  try {
+    const raw = localStorage.getItem(ACHIEVEMENT_STORAGE_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return new Set();
+    return new Set(parsed.filter((id) => ACHIEVEMENTS.some((achievement) => achievement.id === id)));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveAchievements() {
+  localStorage.setItem(ACHIEVEMENT_STORAGE_KEY, JSON.stringify(Array.from(unlockedAchievements).sort()));
+}
+
+function unlockAchievement(id) {
+  if (unlockedAchievements.has(id)) return false;
+  unlockedAchievements.add(id);
+  saveAchievements();
+  return true;
+}
 
 function loadStoredUnlocks() {
   try {
@@ -60,7 +156,7 @@ function saveUnlocks() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(unlockedSpecials).sort()));
 }
 
-function particlesMarkup(count = 48) {
+function particlesMarkup(count = 32) {
   const particles = [];
   for (let i = 0; i < count; i += 1) {
     const x = Math.round(Math.random() * 1000) / 10;
@@ -90,8 +186,12 @@ function isUnlocked(item) {
 }
 
 function lockLabel(item) {
-  if (isUnlocked(item)) return 'Unlocked';
+  if (isUnlocked(item)) return 'Open';
   return item.unlockLabel || 'Locked';
+}
+
+function unlockedCount(items) {
+  return items.filter((item) => isUnlocked(item)).length;
 }
 
 function yearTimelineMarkup() {
@@ -119,10 +219,10 @@ function gateMarkup() {
       <footer class="completion-progress" aria-label="Website completion progress">
         <div class="completion-progress__meta">
           <span>completion</span>
-          <span>55%</span>
+          <span>67%</span>
         </div>
         <div class="completion-progress__track">
-          <span class="completion-progress__fill" style="width: 55%;"></span>
+          <span class="completion-progress__fill" style="width: 67%;"></span>
         </div>
       </footer>
     </section>
@@ -133,116 +233,142 @@ function entranceMarkup() {
   return `
     <section class="entrance is-staged" id="entrance-stage">
       <div class="void-glow" aria-hidden="true"></div>
-      <div class="gate-particles" aria-hidden="true">${particlesMarkup(44)}</div>
+      <div class="gate-particles" aria-hidden="true">${particlesMarkup(40)}</div>
       <div class="entrance-inner">
+        <p class="eyebrow">Private Archive</p>
         <h1>A place that grows with time.</h1>
-        <p class="lead">Some things aren't meant to appear all at once.</p>
+        <p class="lead">A floating constellation of memories, quietly expanding over time.</p>
         <button class="primary-btn" type="button" id="enter-vault">Enter</button>
       </div>
     </section>
   `;
 }
 
-function nodeMarkup(item) {
-  const unlocked = isUnlocked(item);
-  const flash = state.unlockedFlash.has(item.id);
-  const layout = NODE_LAYOUT[item.key] || { x: 0, y: 0, z: 0, size: 'medium', orbit: 24 };
-  const depthBySize = { small: 0.9, medium: 1, large: 1.12 };
-  const nodeScale = depthBySize[layout.size] ?? 1;
+function showEasterToast(message, duration = 2600) {
+  if (easterToastTimer) {
+    clearTimeout(easterToastTimer);
+  }
 
-  return `
-    <button
-      class="memory-node ${unlocked ? 'is-unlocked' : 'is-locked'} ${flash ? 'is-unlock-flash' : ''} ${`size-${layout.size}`}" 
-      type="button"
-      data-node-id="${item.id}"
-      data-open-id="${unlocked ? item.id : ''}"
-      style="--orbit:${layout.orbit}s;--node-scale:${nodeScale};"
-      ${unlocked ? '' : 'aria-disabled="true"'}
-    >
-      <span class="node-dot" aria-hidden="true"></span>
-      <span class="node-label">${item.title}</span>
-      <span class="node-sub ${unlocked ? '' : 'is-blurred'}">${lockLabel(item)}</span>
-      ${flash ? '<span class="node-burst" aria-hidden="true"></span>' : ''}
-    </button>
-  `;
+  state.easterToast = message;
+  render();
+
+  easterToastTimer = setTimeout(() => {
+    state.easterToast = '';
+    if (state.view === 'vault') render();
+  }, duration);
 }
 
-function constellationLinesMarkup(items) {
-  const lines = items.map((item) => {
-    const unlocked = isUnlocked(item);
-    return `<line class="constellation-line ${unlocked ? 'is-unlocked' : ''}" data-link-id="${item.id}" x1="50" y1="50" x2="50" y2="50" />`;
-  });
+function pulseNova(duration = 1800) {
+  if (novaTimer) {
+    clearTimeout(novaTimer);
+  }
 
-  return `
-    <svg class="constellation-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-      ${lines.join('')}
-    </svg>
-  `;
+  state.novaFlash = true;
+  render();
+
+  novaTimer = setTimeout(() => {
+    state.novaFlash = false;
+    if (state.view === 'vault') render();
+  }, duration);
 }
 
-function vaultMarkup() {
+function achievementsMarkup() {
   return `
-    <section class="vault-view shell">
-      <div class="void-glow" aria-hidden="true"></div>
-      <div class="gate-particles is-soft" aria-hidden="true">${particlesMarkup(36)}</div>
-
-      <header class="hero">
-        <p class="eyebrow">Private Timeline</p>
-        <h1>A place that grows with time.</h1>
-        <p class="subtle">A floating memory constellation that expands each March 9 and through hidden codes.</p>
-        ${yearTimelineMarkup()}
-      </header>
-
-      <section class="constellation-stage" id="constellation-stage" aria-label="Memory constellation">
-        <div class="depth-layer back" aria-hidden="true">${particlesMarkup(18)}</div>
-        <div class="depth-layer mid" aria-hidden="true">${particlesMarkup(12)}</div>
-        <div class="constellation-camera" id="constellation-camera">
-          <div class="constellation-group" id="constellation-group">
-            <div class="memory-core" id="memory-core" aria-hidden="true">
-              <span class="core-ring"></span>
-              <span class="core-ring second"></span>
-              <span class="core-shell"></span>
-              <span class="core-heart"></span>
-              <span class="core-specular"></span>
-            </div>
-            ${constellationLinesMarkup(sections)}
-            <div class="memory-nodes">
-              ${sections.map((item) => nodeMarkup(item)).join('')}
-            </div>
-          </div>
+    <section class="achievements-index" aria-label="Secret achievements">
+      <div class="achievements-index__header">
+        <div>
+          <p class="eyebrow">Achievements</p>
+          <h3>${unlockedAchievements.size} / ${ACHIEVEMENTS.length} found</h3>
         </div>
-        <div class="depth-layer front" aria-hidden="true">${particlesMarkup(10)}</div>
-      </section>
-
-      <section class="redeem">
-        <h2>Unlock with code</h2>
-        <form id="redeem-form" autocomplete="off">
-          <input id="redeem-code" name="code" maxlength="64" placeholder="enter code" aria-label="Enter unlock code" />
-          <button class="primary-btn" type="submit">Unlock</button>
-        </form>
-        <p class="status" role="status">${state.status}</p>
-      </section>
-
-      <button class="hidden-star" type="button" id="hidden-star" aria-label="Hidden star">✦</button>
-      ${state.starMessage ? '<p class="secret-toast">You found a tiny star that remembers everything.</p>' : ''}
-      ${state.secretMessage ? '<p class="secret-toast">Secret phrase accepted. A quiet page listens.</p>' : ''}
-
-      <footer class="site-footer">Updated every March 9.</footer>
+      </div>
+      <div class="achievements-index__list">
+        ${ACHIEVEMENTS.map((achievement) => {
+          const found = unlockedAchievements.has(achievement.id);
+          return `
+            <article class="achievement-item ${found ? 'is-found' : 'is-hidden'}">
+              <strong>${achievement.label}</strong>
+              <small>${found ? 'Found' : achievement.hint}</small>
+            </article>
+          `;
+        }).join('')}
+      </div>
     </section>
   `;
 }
 
-function detailMarkup(item) {
-  const art = item.art ? `<img class="detail-art" src="${item.art}" alt="Memory image for ${item.title}" />` : '';
-  const content = Array.isArray(item.content) ? item.content : [];
+function achievementsPageMarkup() {
+  return `
+    <section class="detail-overlay achievements-page" aria-label="Achievements">
+      <div class="detail-overlay__backdrop" data-close-achievements="true"></div>
+      <article class="detail-overlay__panel achievements-page__panel">
+        <button class="ghost-btn detail-overlay__close" type="button" data-close-achievements="true">Back</button>
+        <p class="eyebrow">Achievements</p>
+        <h2>Secret Progress</h2>
+        <p class="subtle">A clearer index of every hidden interaction in the archive.</p>
+        ${achievementsMarkup()}
+      </article>
+    </section>
+  `;
+}
+
+function connectionMarkup() {
+  return `
+    <svg class="constellation-lines" id="constellation-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+      ${NETWORK_CONNECTIONS.map(
+        ([from, to]) => `
+          <line
+            class="constellation-line"
+            data-link-from="${from}"
+            data-link-to="${to}"
+            x1="50"
+            y1="50"
+            x2="50"
+            y2="50"
+          />
+        `
+      ).join('')}
+    </svg>
+  `;
+}
+
+function nodeMarkup(item) {
+  const unlocked = isUnlocked(item);
+  const flash = state.unlockedFlash.has(item.id);
+  const layout = NODE_LAYOUT[item.id];
 
   return `
-    <section class="chapter-stage shell">
-      <div class="chapter-dim" aria-hidden="true"></div>
-      <button class="ghost-btn" id="back-to-vault" type="button">Back to vault</button>
-      <article class="detail-card">
+    <button
+      class="memory-node ${unlocked ? 'is-unlocked' : 'is-locked'} ${flash ? 'is-unlock-flash' : ''} size-${layout.size} kind-${layout.kind} ${state.selectedId === item.id ? 'is-selected' : ''}"
+      type="button"
+      data-node-id="${item.id}"
+      data-open-id="${unlocked ? item.id : ''}"
+      ${unlocked ? '' : 'aria-disabled="true"'}
+    >
+      <span class="memory-node__shape" aria-hidden="true">
+        <span class="memory-node__core"></span>
+      </span>
+      <span class="memory-node__label">
+        <strong>${item.title}</strong>
+        <small>${lockLabel(item)}</small>
+      </span>
+    </button>
+  `;
+}
+
+function overlayMarkup() {
+  if (!state.selectedId) return '';
+  const item = sectionById.get(state.selectedId);
+  if (!item || !isUnlocked(item)) return '';
+  const content = Array.isArray(item.content) ? item.content : [];
+  const art = item.art ? `<img class="detail-art" src="${item.art}" alt="Memory image for ${item.title}" />` : '';
+
+  return `
+    <aside class="detail-overlay" aria-label="Memory detail">
+      <div class="detail-overlay__backdrop" data-close-overlay="true"></div>
+      <article class="detail-overlay__panel">
+        <button class="ghost-btn detail-overlay__close" type="button" data-close-overlay="true">Close</button>
         <p class="eyebrow">${item.type === 'year' ? `Chapter ${item.year}` : 'Special Unlock'}</p>
-        <h1>${item.title}</h1>
+        <h2>${item.title}</h2>
         <p class="subtle">${item.summary}</p>
         ${art}
         <div class="detail-copy">
@@ -251,7 +377,109 @@ function detailMarkup(item) {
             .join('')}
         </div>
       </article>
-      <footer class="site-footer">Updated every March 9.</footer>
+    </aside>
+  `;
+}
+
+function vaultMarkup() {
+  const totalUnlocked = unlockedCount(sections);
+  const nextYear = YEAR_CHAPTERS.find((item) => !isUnlocked(item));
+
+  return `
+    <section class="vault-view">
+      <div class="void-glow" aria-hidden="true"></div>
+      <div class="gate-particles is-soft" aria-hidden="true">${particlesMarkup(28)}</div>
+
+      <section class="constellation-stage" id="constellation-stage" aria-label="Memory constellation">
+        <div class="depth-layer back" aria-hidden="true">${particlesMarkup(16)}</div>
+        <div class="depth-layer mid" aria-hidden="true">${particlesMarkup(12)}</div>
+        <div class="depth-layer stars" aria-hidden="true">${particlesMarkup(9)}</div>
+        <div class="constellation-camera" id="constellation-camera">
+          <div class="constellation-group" id="constellation-group">
+            ${connectionMarkup()}
+            <div class="memory-nodes">
+              ${sections.map((item) => nodeMarkup(item)).join('')}
+            </div>
+          </div>
+        </div>
+        <div class="depth-layer front" aria-hidden="true">${particlesMarkup(10)}</div>
+
+        <header class="hero constellation-hero overlay-panel overlay-panel--hero">
+          <div class="hero-copy">
+            <p class="eyebrow">Private Timeline</p>
+            <h1 id="archive-title">Constellation archive</h1>
+            <p class="subtle" id="archive-subtle">Each memory lives as a node in a drifting network. Hover to trace connections. Click to open what has already unlocked.</p>
+            ${yearTimelineMarkup()}
+          </div>
+          <div class="hero-meta">
+            <p><strong>${totalUnlocked}</strong> of ${sections.length} memories unlocked</p>
+            <p>${nextYear ? nextYear.unlockLabel : 'Every annual chapter is open.'}</p>
+            <button class="ghost-btn hero-meta__action" type="button" id="open-achievements">Open Achievements</button>
+          </div>
+        </header>
+
+        <section class="archive-index overlay-panel overlay-panel--index" aria-label="Memory index">
+          <div class="archive-index__header">
+            <div>
+              <p class="eyebrow">Archive Index</p>
+              <h2 id="archive-index-title">Every node, clearly labeled</h2>
+            </div>
+            <p class="section-note">Use this list when you want the constellation feel without guessing what each object represents.</p>
+          </div>
+          <div class="archive-index__grid">
+            ${sections
+              .map((item) => {
+                const unlocked = isUnlocked(item);
+                return `
+                  <button
+                    class="archive-index__item ${unlocked ? 'is-unlocked' : 'is-locked'}"
+                    type="button"
+                    data-open-id="${unlocked ? item.id : ''}"
+                    data-index-id="${item.id}"
+                  >
+                    <span class="archive-index__meta">${item.type === 'year' ? item.year : 'Special'}</span>
+                    <strong>${item.title}</strong>
+                    <small>${lockLabel(item)}</small>
+                  </button>
+                `;
+              })
+              .join('')}
+          </div>
+        </section>
+
+        <section class="redeem overlay-panel overlay-panel--redeem">
+          <div class="construction-banner" aria-label="Under construction notice">
+            <span>Under Construction</span>
+          </div>
+          <div>
+            <h2>Unlock with code</h2>
+            <p class="subtle redeem-copy">This part of the archive is still being assembled. The code input is staying in place while the final unlock experience is built out.</p>
+          </div>
+          <form id="redeem-form" autocomplete="off">
+            <input id="redeem-code" name="code" maxlength="64" placeholder="coming soon" aria-label="Enter unlock code" disabled />
+            <button class="primary-btn" type="submit" disabled>Unlock</button>
+          </form>
+          <p class="status" role="status">Unlock tools are temporarily disabled while this section is under construction.</p>
+        </section>
+
+        <button
+          class="shooting-star ${state.cometVisible ? 'is-visible' : ''}"
+          id="shooting-star"
+          type="button"
+          aria-label="Shooting star"
+        ></button>
+      </section>
+
+      ${overlayMarkup()}
+      ${state.panel === 'achievements' ? achievementsPageMarkup() : ''}
+
+      <button class="hidden-star" type="button" id="hidden-star" aria-label="Hidden star">*</button>
+      ${state.starMessage ? '<p class="secret-toast">You found a tiny star that remembers everything.</p>' : ''}
+      ${state.secretMessage ? '<p class="secret-toast">Secret phrase accepted. A quiet page listens.</p>' : ''}
+      ${state.easterToast ? `<p class="easter-toast">${state.easterToast}</p>` : ''}
+      ${state.novaFlash ? '<div class="nova-flash" aria-hidden="true"></div>' : ''}
+
+      <footer class="site-footer" id="site-footer">Updated every March 9.</footer>
     </section>
   `;
 }
@@ -260,6 +488,13 @@ function cleanupGateListener() {
   if (!gateKeyHandler) return;
   window.removeEventListener('keydown', gateKeyHandler);
   gateKeyHandler = null;
+}
+
+function stopConstellationMotion() {
+  if (motionFrame) {
+    window.cancelAnimationFrame(motionFrame);
+    motionFrame = null;
+  }
 }
 
 function bindGateListener() {
@@ -283,6 +518,9 @@ function bindGateListener() {
 
     if (event.key.length === 1) {
       gateKeyBuffer = `${gateKeyBuffer}${event.key.toUpperCase()}`.slice(-ACCESS_CODE.length);
+      if (gateKeyBuffer === ACCESS_CODE) {
+        unlockAchievement('entry_rosie');
+      }
     }
   };
 
@@ -290,19 +528,69 @@ function bindGateListener() {
 }
 
 function applyViewClass() {
-  document.body.classList.remove('view-gate', 'view-entrance', 'view-vault', 'view-detail');
+  document.body.classList.remove('view-gate', 'view-entrance', 'view-vault');
   document.body.classList.add(`view-${state.view}`);
 }
 
 function bindGlobalSecretListener() {
   window.addEventListener('keydown', (event) => {
     if (state.view === 'gate') return;
+    const key = event.key.toUpperCase();
+    konamiBuffer = [...konamiBuffer, key].slice(-KONAMI_CODE.length);
+
+    if (konamiBuffer.join('|') === KONAMI_CODE.join('|')) {
+      state.stardustMode = !state.stardustMode;
+      unlockAchievement('secret_konami');
+      if (state.view === 'vault') {
+        showEasterToast(state.stardustMode ? 'Stardust mode awakened.' : 'Stardust mode settled back down.');
+      }
+    }
+
     if (event.key.length !== 1) return;
-    secretTypeBuffer = `${secretTypeBuffer}${event.key.toUpperCase()}`.slice(-SECRET_WORD.length);
+    secretTypeBuffer = `${secretTypeBuffer}${key}`.slice(-SECRET_WORD.length);
+    orbitTypeBuffer = `${orbitTypeBuffer}${key}`.slice(-ORBIT_WORD.length);
+    novaTypeBuffer = `${novaTypeBuffer}${key}`.slice(-NOVA_WORD.length);
+    wishTypeBuffer = `${wishTypeBuffer}${key}`.slice(-WISH_WORD.length);
+    roseTypeBuffer = `${roseTypeBuffer}${key}`.slice(-ROSE_WORD.length);
 
     if (secretTypeBuffer === SECRET_WORD) {
       state.secretMessage = true;
+      unlockAchievement('secret_starlight');
       if (state.view === 'vault') render();
+    }
+
+    if (orbitTypeBuffer === ORBIT_WORD) {
+      motionState.speedBoostUntil = Date.now() + 6000;
+      unlockAchievement('secret_orbit');
+      if (state.view === 'vault') {
+        showEasterToast('Orbit pattern recognized.');
+      }
+    }
+
+    if (novaTypeBuffer === NOVA_WORD && state.view === 'vault') {
+      unlockAchievement('secret_nova');
+      pulseNova();
+      showEasterToast('A tiny nova bloomed and vanished.');
+    }
+
+    if (wishTypeBuffer === WISH_WORD && state.view === 'vault') {
+      unlockAchievement('secret_wish');
+      state.cometVisible = true;
+      render();
+      if (cometTimer) clearTimeout(cometTimer);
+      cometTimer = setTimeout(() => {
+        state.cometVisible = false;
+        if (state.view === 'vault') render();
+      }, 2400);
+      showEasterToast('A wish invited a comet.');
+    }
+
+    if (roseTypeBuffer === ROSE_WORD && state.view === 'vault') {
+      state.roseMode = !state.roseMode;
+      unlockAchievement('secret_rose');
+      document.body.classList.toggle('is-rose-mode', state.roseMode);
+      showEasterToast(state.roseMode ? 'Rose tint found.' : 'Rose tint faded.');
+      render();
     }
   });
 }
@@ -312,8 +600,23 @@ function openSection(id) {
   const section = sectionById.get(id);
   if (!section || !isUnlocked(section)) return;
   state.selectedId = id;
-  state.view = 'detail';
-  state.status = '';
+  state.panel = 'vault';
+  render();
+}
+
+function closeOverlay() {
+  if (!state.selectedId) return;
+  state.selectedId = null;
+  render();
+}
+
+function openAchievements() {
+  state.panel = 'achievements';
+  render();
+}
+
+function closeAchievements() {
+  state.panel = 'vault';
   render();
 }
 
@@ -335,30 +638,24 @@ function triggerUnlockFlash(ids) {
 function bindConstellationMotion() {
   const stage = document.getElementById('constellation-stage');
   const camera = document.getElementById('constellation-camera');
-  const group = document.getElementById('constellation-group');
-  if (!stage || !camera || !group) return;
+  if (!stage || !camera) return;
 
-  motionState.paused = false;
-  motionState.hoveringNode = false;
+  motionState.dragging = false;
 
-  camera.style.setProperty('--cam-x', '0px');
-  camera.style.setProperty('--cam-y', '0px');
-  camera.style.setProperty('--cam-rx', '0deg');
-  camera.style.setProperty('--cam-ry', '0deg');
-  camera.style.setProperty('--cam-zoom', '1');
-  camera.style.setProperty('--cam-breathe', '0px');
-  group.style.setProperty('--group-rx', '0deg');
-  group.style.setProperty('--group-ry', '0rad');
-
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
   const nodeEntries = sections
     .map((item) => {
       const el = stage.querySelector(`.memory-node[data-node-id="${item.id}"]`);
-      const link = stage.querySelector(`.constellation-line[data-link-id="${item.id}"]`);
-      const pos = NODE_LAYOUT[item.key];
-      if (!el || !link || !pos) return null;
-      return { item, el, link, pos };
+      const pos = NODE_LAYOUT[item.id];
+      if (!el || !pos) return null;
+      return { item, el, pos };
     })
     .filter(Boolean);
+
+  const lineEntries = NETWORK_CONNECTIONS.map(([from, to]) => {
+    const el = stage.querySelector(`.constellation-line[data-link-from="${from}"][data-link-to="${to}"]`);
+    return el ? { from, to, el } : null;
+  }).filter(Boolean);
 
   const project = (point, width, height, cameraDistance) => {
     const zDepth = point.z + cameraDistance;
@@ -370,22 +667,16 @@ function bindConstellationMotion() {
     };
   };
 
-  const orbitState = {
-    dragging: false,
-    lastX: 0,
-    lastY: 0,
-    userYaw: 0,
-    userPitch: 0,
-    cursorYaw: 0,
-    cursorPitch: 0
-  };
-
-  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const hoverNeighbors = motionState.hoveredId ? neighborMap.get(motionState.hoveredId) || new Set() : new Set();
 
   stage.addEventListener('pointerdown', (event) => {
-    orbitState.dragging = true;
-    orbitState.lastX = event.clientX;
-    orbitState.lastY = event.clientY;
+    if (event.target.closest('.memory-node, .overlay-panel, .detail-overlay__panel, .hidden-star, .shooting-star')) {
+      return;
+    }
+    motionState.dragging = true;
+    motionState.dragMoved = false;
+    motionState.lastX = event.clientX;
+    motionState.lastY = event.clientY;
     stage.classList.add('is-dragging');
     stage.setPointerCapture?.(event.pointerId);
   });
@@ -394,53 +685,101 @@ function bindConstellationMotion() {
     const rect = stage.getBoundingClientRect();
     const nx = clamp((event.clientX - rect.left) / rect.width, 0, 1);
     const ny = clamp((event.clientY - rect.top) / rect.height, 0, 1);
-    orbitState.cursorYaw = (nx - 0.5) * 0.22;
-    orbitState.cursorPitch = (0.5 - ny) * 0.12;
+    motionState.cursorYaw = (nx - 0.5) * 0.28;
+    motionState.cursorPitch = (ny - 0.5) * 0.16;
 
-    if (!orbitState.dragging) return;
-    const dx = event.clientX - orbitState.lastX;
-    const dy = event.clientY - orbitState.lastY;
-    orbitState.lastX = event.clientX;
-    orbitState.lastY = event.clientY;
-    orbitState.userYaw = clamp(orbitState.userYaw + dx * 0.0055, -1.2, 1.2);
-    orbitState.userPitch = clamp(orbitState.userPitch - dy * 0.0038, -0.38, 0.38);
+    if (!motionState.dragging) return;
+    const dx = event.clientX - motionState.lastX;
+    const dy = event.clientY - motionState.lastY;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+      motionState.dragMoved = true;
+    }
+    motionState.lastX = event.clientX;
+    motionState.lastY = event.clientY;
+    motionState.userYaw += dx * 0.0048;
+    motionState.userPitch = clamp(motionState.userPitch + dy * 0.0038, -0.9, 0.9);
   });
 
   const stopDrag = () => {
-    orbitState.dragging = false;
+    motionState.dragging = false;
+    motionState.dragMoved = false;
     stage.classList.remove('is-dragging');
   };
 
   stage.addEventListener('pointerup', stopDrag);
   stage.addEventListener('pointercancel', stopDrag);
+  stage.addEventListener('mouseleave', () => {
+    motionState.cursorYaw = 0;
+    motionState.cursorPitch = 0;
+    stopDrag();
+  });
+  stage.addEventListener('dblclick', (event) => {
+    if (event.target.closest('.memory-node, .overlay-panel, .detail-overlay__panel')) return;
+    unlockAchievement('empty_space_comet');
+    state.cometVisible = true;
+    if (cometTimer) clearTimeout(cometTimer);
+    showEasterToast(EASTER_MESSAGES[Math.floor(Math.random() * EASTER_MESSAGES.length)], 2200);
+    render();
+    cometTimer = setTimeout(() => {
+      state.cometVisible = false;
+      if (state.view === 'vault') render();
+    }, 2200);
+  });
+
+  nodeEntries.forEach(({ item, el }) => {
+    el.addEventListener('mouseenter', () => {
+      motionState.hoveredId = item.id;
+      applyNetworkHighlight();
+    });
+
+    el.addEventListener('mouseleave', () => {
+      motionState.hoveredId = null;
+      applyNetworkHighlight();
+    });
+  });
+
+  function applyNetworkHighlight() {
+    const hoveredId = motionState.hoveredId;
+    const related = hoveredId ? neighborMap.get(hoveredId) || new Set() : new Set();
+
+    nodeEntries.forEach(({ item, el }) => {
+      const isHovered = item.id === hoveredId;
+      const isNeighbor = hoveredId ? related.has(item.id) : false;
+      el.classList.toggle('is-hovered', isHovered);
+      el.classList.toggle('is-neighbor', isNeighbor);
+    });
+
+    lineEntries.forEach(({ from, to, el }) => {
+      const active = hoveredId ? from === hoveredId || to === hoveredId : false;
+      const relatedLine = hoveredId ? related.has(from) && to === hoveredId || related.has(to) && from === hoveredId : false;
+      el.classList.toggle('is-active', active || relatedLine);
+      el.classList.toggle('is-dimmed', hoveredId && !active && !relatedLine);
+    });
+  }
+
+  applyNetworkHighlight();
 
   let lastTime = 0;
   const loop = (time) => {
-    if (!lastTime) {
-      lastTime = time;
-    }
-
+    if (!lastTime) lastTime = time;
     const delta = (time - lastTime) / 1000;
     lastTime = time;
 
-    const fullTurnSeconds = 84;
-    const baseSpeed = (Math.PI * 2) / fullTurnSeconds;
-    const speedMultiplier = motionState.hoveringNode ? 0.33 : 1;
-    const organic = Math.sin(time * 0.00021) * 0.00018;
-
-    if (!motionState.paused) {
-      motionState.rotationY += baseSpeed * speedMultiplier * delta + organic;
-    }
+    const baseTurn = (Math.PI * 2) / 86;
+    const selectedLayout = state.selectedId ? NODE_LAYOUT[state.selectedId] : null;
+    const boosted = Date.now() < motionState.speedBoostUntil ? 1.85 : 1;
+    const speedMultiplier = (state.selectedId ? 0.16 : motionState.hoveredId ? 0.45 : 1) * boosted;
+    motionState.rotationY += baseTurn * speedMultiplier * delta;
 
     const width = stage.clientWidth;
     const height = stage.clientHeight;
-    const camDist = Math.max(640, width * 1.2);
-    const totalYaw = motionState.rotationY + orbitState.userYaw + orbitState.cursorYaw;
+    const camDist = Math.max(720, width * 1.28);
+    const totalYaw = motionState.rotationY + motionState.userYaw + motionState.cursorYaw;
+    const totalPitch = 0.1 + motionState.userPitch + motionState.cursorPitch;
     const cosY = Math.cos(totalYaw);
     const sinY = Math.sin(totalYaw);
-    const tiltX = clamp(0.12 + orbitState.userPitch + orbitState.cursorPitch, -0.5, 0.5);
-    const cosX = Math.cos(tiltX);
-    const sinX = Math.sin(tiltX);
+    const cosX = Math.cos(totalPitch);
+    const sinX = Math.sin(totalPitch);
 
     const rotatePoint = (point) => {
       const x1 = point.x * cosY - point.z * sinY;
@@ -450,108 +789,97 @@ function bindConstellationMotion() {
       return { x: x1, y: y2, z: z2 };
     };
 
-    const coreProjected = project(rotatePoint(CORE_POINT), width, height, camDist);
-
-    nodeEntries.forEach((entry, index) => {
-      const bob = Math.sin(time * 0.00038 + index * 0.75) * 8;
-      const point = rotatePoint({ x: entry.pos.x, y: entry.pos.y + bob, z: entry.pos.z });
+    const projectedPoints = new Map();
+    nodeEntries.forEach(({ item, el, pos }, index) => {
+      const bob = Math.sin(time * 0.0005 + index * 0.8) * 10;
+      const sway = Math.cos(time * 0.00036 + index * 0.9) * 6;
+      const point = rotatePoint({
+        x: pos.x + sway,
+        y: pos.y + bob,
+        z: pos.z
+      });
       const projected = project(point, width, height, camDist);
-      const baseScale = parseFloat(entry.el.style.getPropertyValue('--node-scale') || '1');
-      const totalScale = Math.max(0.62, Math.min(1.5, baseScale * projected.scale));
+      projectedPoints.set(item.id, { projected, point });
 
-      entry.el.style.transform = `translate3d(${projected.x.toFixed(2)}px, ${projected.y.toFixed(2)}px, 0) translate(-50%, -50%) scale(${totalScale.toFixed(3)})`;
-      entry.el.style.zIndex = `${Math.round(1000 + point.z)}`;
-
-      entry.link.setAttribute('x1', ((coreProjected.x / width) * 100).toFixed(3));
-      entry.link.setAttribute('y1', ((coreProjected.y / height) * 100).toFixed(3));
-      entry.link.setAttribute('x2', ((projected.x / width) * 100).toFixed(3));
-      entry.link.setAttribute('y2', ((projected.y / height) * 100).toFixed(3));
-      entry.link.style.opacity = `${Math.max(0.15, Math.min(0.8, 0.36 + point.z / 1000))}`;
+      const baseScale = pos.size === 'large' ? 1.1 : pos.size === 'medium' ? 0.92 : 0.8;
+      const totalScale = Math.max(0.55, Math.min(1.48, baseScale * projected.scale));
+      el.style.transform = `translate3d(${projected.x.toFixed(2)}px, ${projected.y.toFixed(2)}px, 0) translate(-50%, -50%) scale(${totalScale.toFixed(3)})`;
+      el.style.zIndex = `${Math.round(1000 + point.z)}`;
     });
 
-    const breathe = Math.sin(time * 0.0007) * 5;
-    const driftX = Math.sin(time * 0.00028) * 1.8;
-    const driftY = Math.cos(time * 0.00024) * 1.4;
-    camera.style.setProperty('--cam-breathe', `${breathe.toFixed(2)}px`);
-    camera.style.setProperty('--cam-x', `${driftX.toFixed(2)}px`);
-    camera.style.setProperty('--cam-y', `${driftY.toFixed(2)}px`);
+    lineEntries.forEach(({ from, to, el }) => {
+      const a = projectedPoints.get(from);
+      const b = projectedPoints.get(to);
+      if (!a || !b) return;
+
+      el.setAttribute('x1', ((a.projected.x / width) * 100).toFixed(3));
+      el.setAttribute('y1', ((a.projected.y / height) * 100).toFixed(3));
+      el.setAttribute('x2', ((b.projected.x / width) * 100).toFixed(3));
+      el.setAttribute('y2', ((b.projected.y / height) * 100).toFixed(3));
+      const depth = (a.point.z + b.point.z) / 2;
+      el.style.opacity = `${Math.max(0.12, Math.min(0.82, 0.34 + depth / 1000))}`;
+    });
+
+    let targetX = 0;
+    let targetY = 0;
+    let targetZoom = 1;
+
+    if (selectedLayout) {
+      const focused = projectedPoints.get(state.selectedId);
+      if (focused) {
+        targetX = (width / 2 - focused.projected.x) * 0.08;
+        targetY = (height / 2 - focused.projected.y) * 0.06;
+      }
+      targetZoom = 1.08;
+    } else if (motionState.hoveredId) {
+      targetZoom = Math.max(targetZoom, 1.02);
+    }
+
+    camera.style.setProperty('--cam-x', `${targetX.toFixed(2)}px`);
+    camera.style.setProperty('--cam-y', `${targetY.toFixed(2)}px`);
+    camera.style.setProperty('--cam-zoom', targetZoom.toFixed(3));
 
     motionFrame = window.requestAnimationFrame(loop);
   };
 
   motionFrame = window.requestAnimationFrame(loop);
-
-  stage.addEventListener('mouseleave', () => {
-    motionState.hoveringNode = false;
-    camera.classList.remove('is-focused');
-    camera.style.setProperty('--cam-zoom', '1');
-    orbitState.cursorYaw = 0;
-    orbitState.cursorPitch = 0;
-    stopDrag();
-  });
-
-  app.querySelectorAll('.memory-node').forEach((node) => {
-    node.addEventListener('mouseenter', () => {
-      motionState.hoveringNode = true;
-      camera.classList.add('is-focused');
-    });
-
-    node.addEventListener('mouseleave', () => {
-      motionState.hoveringNode = false;
-      camera.classList.remove('is-focused');
-    });
-  });
-}
-
-function stopConstellationMotion() {
-  if (motionFrame) {
-    window.cancelAnimationFrame(motionFrame);
-    motionFrame = null;
-  }
-
-  if (focusTimer) {
-    window.clearTimeout(focusTimer);
-    focusTimer = null;
-  }
 }
 
 function bindVaultEvents() {
   app.querySelectorAll('[data-open-id]').forEach((button) => {
     button.addEventListener('click', () => {
+      if (motionState.dragMoved) {
+        return;
+      }
       const id = button.getAttribute('data-open-id');
       if (!id) {
         const nodeId = button.getAttribute('data-node-id');
-        const item = nodeId ? sectionById.get(nodeId) : null;
+        const indexId = button.getAttribute('data-index-id');
+        const lookupId = nodeId || indexId;
+        const item = lookupId ? sectionById.get(lookupId) : null;
         state.status = item ? lockLabel(item) : 'Locked for now.';
         render();
         return;
       }
 
-      if (button.classList.contains('memory-node')) {
-        const nodeId = button.getAttribute('data-node-id');
-        const item = nodeId ? sectionById.get(nodeId) : null;
-        const layout = item ? NODE_LAYOUT[item.key] : null;
-        const stage = document.getElementById('constellation-stage');
-        const camera = document.getElementById('constellation-camera');
+      openSection(id);
+    });
+  });
 
-        motionState.paused = true;
-        stage?.classList.add('is-focusing');
-        camera?.style.setProperty('--cam-zoom', '1.11');
-
-        if (layout && camera) {
-          const focusX = -layout.x * 0.14;
-          const focusY = -layout.y * 0.1;
-          camera.style.setProperty('--cam-x', `${focusX.toFixed(2)}px`);
-          camera.style.setProperty('--cam-y', `${focusY.toFixed(2)}px`);
-        }
-
-        focusTimer = window.setTimeout(() => {
-          openSection(id);
-        }, 460);
+  app.querySelectorAll('[data-close-overlay]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (motionState.dragMoved) {
         return;
       }
-
-      openSection(id);
+      closeOverlay();
+    });
+  });
+  app.querySelectorAll('[data-close-achievements]').forEach((button) => {
+    button.addEventListener('click', () => {
+      if (motionState.dragMoved) {
+        return;
+      }
+      closeAchievements();
     });
   });
 
@@ -585,7 +913,7 @@ function bindVaultEvents() {
     });
 
     saveUnlocks();
-    state.status = newUnlocks.length ? 'New node unlocked.' : 'That code was already used.';
+    state.status = newUnlocks.length ? 'New memory unlocked.' : 'That code was already used.';
 
     if (newUnlocks.length) {
       triggerUnlockFlash(newUnlocks);
@@ -596,8 +924,87 @@ function bindVaultEvents() {
   });
 
   document.getElementById('hidden-star')?.addEventListener('click', () => {
+    if (motionState.dragMoved) {
+      return;
+    }
+    motionState.starTapCount += 1;
     state.starMessage = !state.starMessage;
+    if (motionState.starTapCount === 7) {
+      unlockAchievement('star_tapper');
+      showEasterToast('Seven taps. The archive will remember that.');
+      motionState.starTapCount = 0;
+    } else {
+      render();
+    }
+  });
+
+  document.getElementById('archive-title')?.addEventListener('click', () => {
+    if (motionState.dragMoved) {
+      return;
+    }
+    motionState.heroTapCount += 1;
+    if (motionState.heroTapCount >= 5) {
+      motionState.heroTapCount = 0;
+      unlockAchievement('title_tapper');
+      showEasterToast('The archive blinked back.');
+      document.title = 'The Archive Blinked Back';
+    }
+  });
+
+  document.getElementById('archive-subtle')?.addEventListener('dblclick', () => {
+    if (motionState.dragMoved) {
+      return;
+    }
+    unlockAchievement('subtitle_double');
+    showEasterToast('Double meanings live in quiet lines.');
+  });
+
+  document.getElementById('archive-index-title')?.addEventListener('click', () => {
+    if (motionState.dragMoved) {
+      return;
+    }
+    motionState.indexTapCount += 1;
+    if (motionState.indexTapCount >= 4) {
+      motionState.indexTapCount = 0;
+      unlockAchievement('index_tapper');
+      state.wishMode = !state.wishMode;
+      document.body.classList.toggle('is-wish-mode', state.wishMode);
+      showEasterToast(state.wishMode ? 'Wish mode drifted in.' : 'Wish mode drifted away.');
+      return;
+    }
+    showEasterToast('The index rustled softly.', 1100);
+  });
+
+  document.getElementById('shooting-star')?.addEventListener('click', () => {
+    if (motionState.dragMoved) {
+      return;
+    }
+    unlockAchievement('shooting_star');
+    state.cometVisible = false;
+    showEasterToast('You caught the shooting star.');
     render();
+  });
+
+  document.getElementById('site-footer')?.addEventListener('click', () => {
+    if (motionState.dragMoved) {
+      return;
+    }
+    motionState.footerTapCount += 1;
+    if (motionState.footerTapCount >= 3) {
+      motionState.footerTapCount = 0;
+      unlockAchievement('footer_tapper');
+      pulseNova(1200);
+      showEasterToast('March 9 remembers you too.');
+      return;
+    }
+    showEasterToast('Time noticed.', 900);
+  });
+
+  document.getElementById('open-achievements')?.addEventListener('click', () => {
+    if (motionState.dragMoved) {
+      return;
+    }
+    openAchievements();
   });
 
   bindConstellationMotion();
@@ -616,10 +1023,10 @@ function bindEntranceEvents() {
 }
 
 function render() {
+  stopConstellationMotion();
   applyViewClass();
 
   if (state.view === 'gate') {
-    stopConstellationMotion();
     app.innerHTML = gateMarkup();
     bindGateListener();
     return;
@@ -628,35 +1035,17 @@ function render() {
   cleanupGateListener();
 
   if (state.view === 'entrance') {
-    stopConstellationMotion();
     app.innerHTML = entranceMarkup();
     bindEntranceEvents();
     return;
   }
 
-  if (state.view === 'detail' && state.selectedId) {
-    stopConstellationMotion();
-    const section = sectionById.get(state.selectedId);
-    if (!section || !isUnlocked(section)) {
-      state.view = 'vault';
-      state.selectedId = null;
-      render();
-      return;
-    }
-
-    app.innerHTML = detailMarkup(section);
-    document.getElementById('back-to-vault')?.addEventListener('click', () => {
-      state.view = 'vault';
-      state.selectedId = null;
-      render();
-    });
-    return;
-  }
-
   state.view = 'vault';
-  stopConstellationMotion();
   applyViewClass();
   app.innerHTML = vaultMarkup();
+  document.body.classList.toggle('is-stardust-mode', state.stardustMode);
+  document.body.classList.toggle('is-rose-mode', state.roseMode);
+  document.body.classList.toggle('is-wish-mode', state.wishMode);
   bindVaultEvents();
 }
 
@@ -665,6 +1054,12 @@ window.addEventListener('mousemove', (event) => {
   const y = (event.clientY / window.innerHeight) * 100;
   document.body.style.setProperty('--mx', `${x.toFixed(2)}%`);
   document.body.style.setProperty('--my', `${y.toFixed(2)}%`);
+});
+
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && state.selectedId) {
+    closeOverlay();
+  }
 });
 
 bindGlobalSecretListener();
