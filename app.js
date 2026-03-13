@@ -9,6 +9,10 @@ const NOVA_WORD = 'NOVA';
 const WISH_WORD = 'WISH';
 const ROSE_WORD = 'ROSE';
 const ACHIEVEMENT_STORAGE_KEY = 'time_capsule_achievements';
+const GALLERY_DB_NAME = 'time_capsule_gallery';
+const GALLERY_STORE_NAME = 'photos';
+const GALLERY_SPECIAL_ID = 'special-gallery';
+const CHAPTER_SATELLITES_UNDER_CONSTRUCTION_ID = 'year-2026';
 const EASTER_MESSAGES = [
   'A quiet comet just crossed the archive.',
   'The constellation noticed you looking back.',
@@ -49,6 +53,37 @@ const NODE_LAYOUT = {
 };
 
 const SATELLITE_KIND_SEQUENCE = ['ring', 'shard', 'frame', 'crystal'];
+
+function seededUnit(seed) {
+  let hash = 2166136261;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash ^= seed.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0) / 4294967295;
+}
+
+function seededRange(seed, min, max) {
+  return min + seededUnit(seed) * (max - min);
+}
+
+function randomizeSatelliteOrbit(item, chapterId) {
+  const seedRoot = `${chapterId}:${item.id}`;
+  const speedSign = item.orbitSpeed < 0 ? -1 : 1;
+
+  return {
+    ...item,
+    orbitRadius: item.orbitRadius * seededRange(`${seedRoot}:radius`, 0.88, 1.18),
+    orbitHeight: item.orbitHeight * seededRange(`${seedRoot}:height`, 0.72, 1.52),
+    orbitSpeed: speedSign * Math.max(0.34, Math.abs(item.orbitSpeed) * seededRange(`${seedRoot}:speed`, 0.82, 1.34)),
+    phase: item.phase + seededRange(`${seedRoot}:phase`, -0.95, 1.45),
+    orbitTilt: seededRange(`${seedRoot}:tilt`, -0.9, 0.9),
+    orbitStretch: seededRange(`${seedRoot}:stretch`, 0.72, 1.38),
+    orbitDepth: seededRange(`${seedRoot}:depth`, 0.24, 0.82),
+    orbitWobble: seededRange(`${seedRoot}:wobble`, 2, 10),
+    orbitLift: seededRange(`${seedRoot}:lift`, -18, 18)
+  };
+}
 
 function buildChapterSystem(chapter) {
   const content = Array.isArray(chapter.content) ? chapter.content : [];
@@ -101,7 +136,7 @@ function buildChapterSystem(chapter) {
     });
   });
 
-  return satellites;
+  return satellites.map((item) => randomizeSatelliteOrbit(item, chapter.id));
 }
 
 const CHAPTER_SYSTEMS = new Map(YEAR_CHAPTERS.map((chapter) => [chapter.id, buildChapterSystem(chapter)]));
@@ -141,6 +176,9 @@ const state = {
   roseMode: false,
   wishMode: false,
   novaFlash: false,
+  galleryPhotos: [],
+  galleryStatus: '',
+  galleryLoading: false,
   gateLetters: [],
   gateAttempt: 'idle'
 };
@@ -161,16 +199,25 @@ let easterToastTimer = null;
 let cometTimer = null;
 let novaTimer = null;
 let gateAttemptTimer = null;
+let viewTransitionActive = false;
+let galleryDbPromise = null;
 const motionState = {
   rotationY: 0,
   cursorYaw: 0,
   cursorPitch: 0,
   userYaw: 0,
   userPitch: 0,
+  camX: 0,
+  camY: 0,
+  camZoom: 1,
+  zoom: 1,
   dragging: false,
   dragMoved: false,
   lastX: 0,
   lastY: 0,
+  activePointers: new Map(),
+  pinchDistance: 0,
+  pinchZoomStart: 1,
   hoveredId: null,
   speedBoostUntil: 0,
   starTapCount: 0,
@@ -219,6 +266,256 @@ function saveUnlocks() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(Array.from(unlockedSpecials).sort()));
 }
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function todayInputValue() {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = `${now.getMonth() + 1}`.padStart(2, '0');
+  const day = `${now.getDate()}`.padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function formatContributionDate(value) {
+  if (!value) return 'Unknown date';
+  const parsed = new Date(`${value}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleDateString();
+}
+
+function defaultGalleryPlacement(index = 0) {
+  const column = index % 3;
+  const row = Math.floor(index / 3) % 4;
+  const x = 22 + column * 26 + ((index * 17) % 7) - 3;
+  const y = 20 + row * 18 + ((index * 13) % 9) - 4;
+  const rotation = ((index * 11) % 18) - 9;
+  return {
+    boardX: Math.max(12, Math.min(88, x)),
+    boardY: Math.max(14, Math.min(84, y)),
+    rotation
+  };
+}
+
+function galleryPlacement(photo, index = 0) {
+  if (typeof photo.boardX === 'number' && typeof photo.boardY === 'number') {
+    return {
+      boardX: photo.boardX,
+      boardY: photo.boardY,
+      rotation: typeof photo.rotation === 'number' ? photo.rotation : 0
+    };
+  }
+  return defaultGalleryPlacement(index);
+}
+
+function openGalleryDatabase() {
+  if (galleryDbPromise) return galleryDbPromise;
+
+  galleryDbPromise = new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) {
+      reject(new Error('IndexedDB is not available in this browser.'));
+      return;
+    }
+
+    const request = window.indexedDB.open(GALLERY_DB_NAME, 1);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(GALLERY_STORE_NAME)) {
+        db.createObjectStore(GALLERY_STORE_NAME, { keyPath: 'id' });
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error('Failed to open gallery storage.'));
+  });
+
+  return galleryDbPromise;
+}
+
+function readAllGalleryPhotos() {
+  return openGalleryDatabase().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(GALLERY_STORE_NAME, 'readonly');
+        const store = tx.objectStore(GALLERY_STORE_NAME);
+        const request = store.getAll();
+        request.onsuccess = () => {
+          const photos = Array.isArray(request.result) ? request.result : [];
+          photos.sort((a, b) => (b.contributedAt || b.createdAt || 0) - (a.contributedAt || a.createdAt || 0));
+          resolve(photos);
+        };
+        request.onerror = () => reject(request.error || new Error('Failed to load gallery photos.'));
+      })
+  );
+}
+
+function writeGalleryPhoto(photo) {
+  return openGalleryDatabase().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(GALLERY_STORE_NAME, 'readwrite');
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('Failed to save photo.'));
+        tx.objectStore(GALLERY_STORE_NAME).put(photo);
+      })
+  );
+}
+
+function deleteGalleryPhotoRecord(id) {
+  return openGalleryDatabase().then(
+    (db) =>
+      new Promise((resolve, reject) => {
+        const tx = db.transaction(GALLERY_STORE_NAME, 'readwrite');
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error || new Error('Failed to delete photo.'));
+        tx.objectStore(GALLERY_STORE_NAME).delete(id);
+      })
+  );
+}
+
+function loadGalleryPhotos() {
+  state.galleryLoading = true;
+  return readAllGalleryPhotos()
+    .then((photos) => {
+      state.galleryPhotos = photos;
+      state.galleryStatus = photos.length ? '' : state.galleryStatus;
+    })
+    .catch(() => {
+      state.galleryStatus = 'Gallery storage could not be opened in this browser.';
+    })
+    .finally(() => {
+      state.galleryLoading = false;
+      if (state.view === 'vault') render();
+    });
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error || new Error('Could not read the image.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function loadImageElement(src) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Could not load the uploaded image.'));
+    image.src = src;
+  });
+}
+
+async function normalizeGalleryImage(file) {
+  const dataUrl = await fileToDataUrl(file);
+  const image = await loadImageElement(dataUrl);
+  const maxSide = 1800;
+  const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+  const width = Math.max(1, Math.round(image.width * scale));
+  const height = Math.max(1, Math.round(image.height * scale));
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext('2d');
+  context.drawImage(image, 0, 0, width, height);
+  const optimized = canvas.toDataURL('image/webp', 0.9);
+  return {
+    src: optimized,
+    width,
+    height
+  };
+}
+
+async function handleGalleryUpload(fileList, options = {}) {
+  const files = Array.from(fileList || []).filter((file) => file.type.startsWith('image/'));
+  if (!files.length) {
+    state.galleryStatus = 'Choose one or more image files first.';
+    render();
+    return;
+  }
+
+  const note = String(options.note || '').trim();
+  const contributedOn = String(options.contributedOn || todayInputValue()).trim() || todayInputValue();
+  const contributedAt = new Date(`${contributedOn}T00:00:00`).getTime();
+
+  state.galleryLoading = true;
+  state.galleryStatus = files.length === 1 ? 'Saving photo...' : `Saving ${files.length} photos...`;
+  render();
+
+  let savedCount = 0;
+  const startingCount = state.galleryPhotos.length;
+
+  try {
+    for (const file of files) {
+      const normalized = await normalizeGalleryImage(file);
+      const placement = defaultGalleryPlacement(startingCount + savedCount);
+      await writeGalleryPhoto({
+        id: `photo_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+        name: file.name || 'Uploaded Photo',
+        alt: `Uploaded memory photo: ${file.name || 'Untitled'}`,
+        src: normalized.src,
+        width: normalized.width,
+        height: normalized.height,
+        note,
+        contributedOn,
+        contributedAt: Number.isNaN(contributedAt) ? Date.now() : contributedAt,
+        boardX: placement.boardX,
+        boardY: placement.boardY,
+        rotation: placement.rotation,
+        createdAt: Date.now()
+      });
+      savedCount += 1;
+    }
+
+    await loadGalleryPhotos();
+    state.galleryStatus = savedCount === 1 ? 'Photo saved to the gallery.' : `${savedCount} photos saved to the gallery.`;
+  } catch {
+    state.galleryLoading = false;
+    state.galleryStatus = 'That upload did not finish. Try a different image.';
+    render();
+    return;
+  }
+
+  state.galleryLoading = false;
+  render();
+}
+
+async function handleGalleryDelete(id) {
+  if (!id) return;
+  state.galleryStatus = 'Removing photo...';
+  render();
+
+  try {
+    await deleteGalleryPhotoRecord(id);
+    await loadGalleryPhotos();
+    state.galleryStatus = 'Photo removed from the gallery.';
+  } catch {
+    state.galleryStatus = 'That photo could not be removed right now.';
+  }
+
+  render();
+}
+
+async function updateGalleryPhotoLayout(id, patch = {}) {
+  const current = state.galleryPhotos.find((photo) => photo.id === id);
+  if (!current) return;
+  const nextPhoto = { ...current, ...patch };
+  state.galleryPhotos = state.galleryPhotos.map((photo) => (photo.id === id ? nextPhoto : photo));
+
+  try {
+    await writeGalleryPhoto(nextPhoto);
+  } catch {
+    state.galleryStatus = 'That photo position could not be saved.';
+    render();
+  }
+}
+
 function particlesMarkup(count = 32) {
   const particles = [];
   for (let i = 0; i < count; i += 1) {
@@ -242,7 +539,22 @@ function isYearUnlocked(item, now = new Date()) {
   return now >= unlockDate;
 }
 
+function isMemoryTemporarilyLocked(item) {
+  if (!item) return false;
+  return item.type === 'satellite' && item.parentId === CHAPTER_SATELLITES_UNDER_CONSTRUCTION_ID;
+}
+
+function isChapterDetailTemporarilyLocked(item) {
+  if (!item) return false;
+  return item.type === 'year' && item.id === CHAPTER_SATELLITES_UNDER_CONSTRUCTION_ID;
+}
+
+function isDetailTemporarilyLocked(item) {
+  return isMemoryTemporarilyLocked(item) || isChapterDetailTemporarilyLocked(item);
+}
+
 function isUnlocked(item) {
+  if (isMemoryTemporarilyLocked(item)) return false;
   if (item.type === 'year') return isYearUnlocked(item);
   if (item.defaultUnlocked) return true;
   return unlockedSpecials.has(item.id);
@@ -254,6 +566,7 @@ function detailById(id) {
 
 function isDetailUnlocked(item) {
   if (!item) return false;
+  if (isDetailTemporarilyLocked(item)) return false;
   if (item.type === 'satellite') {
     return isUnlocked(sectionById.get(item.parentId));
   }
@@ -261,8 +574,14 @@ function isDetailUnlocked(item) {
 }
 
 function lockLabel(item) {
+  if (isMemoryTemporarilyLocked(item)) return 'Under Construction';
   if (isUnlocked(item)) return 'Open';
   return item.unlockLabel || 'Locked';
+}
+
+function statusLabel(item) {
+  if (isDetailTemporarilyLocked(item)) return 'Under Construction';
+  return lockLabel(item);
 }
 
 function unlockedCount(items) {
@@ -308,10 +627,10 @@ function gateMarkup() {
       <footer class="completion-progress" aria-label="Website completion progress">
         <div class="completion-progress__meta">
           <span>completion</span>
-          <span>67%</span>
+          <span>80%</span>
         </div>
         <div class="completion-progress__track">
-          <span class="completion-progress__fill" style="width: 67%;"></span>
+          <span class="completion-progress__fill" style="width: 80%;"></span>
         </div>
       </footer>
     </section>
@@ -422,6 +741,77 @@ function achievementsPageMarkup() {
   `;
 }
 
+function galleryDetailMarkup(item) {
+  const photosMarkup = state.galleryPhotos.length
+    ? state.galleryPhotos
+        .map(
+          (photo, index) => {
+            const placement = galleryPlacement(photo, index);
+            return `
+            <figure
+              class="gallery-photo-card"
+              data-gallery-photo-id="${photo.id}"
+              style="left:${placement.boardX}%;top:${placement.boardY}%;--photo-rot:${placement.rotation}deg;"
+            >
+              <img src="${photo.src}" alt="${escapeHtml(photo.alt)}" loading="lazy" />
+              <figcaption>
+                <div>
+                  <small>Added ${formatContributionDate(photo.contributedOn || '')}</small>
+                  ${photo.note ? `<p class="gallery-photo-card__note">${escapeHtml(photo.note)}</p>` : '<p class="gallery-photo-card__note is-empty">No note yet.</p>'}
+                </div>
+                <button class="ghost-btn gallery-photo-card__delete" type="button" data-delete-gallery-photo="${photo.id}">
+                  Delete
+                </button>
+              </figcaption>
+            </figure>
+          `;
+          }
+        )
+        .join('')
+    : `
+        <div class="gallery-empty gallery-board__empty">
+          <p>No uploaded photos yet.</p>
+          <small>The first upload will stay here on this browser and device.</small>
+        </div>
+      `;
+
+  return `
+    <aside class="detail-overlay" aria-label="Gallery detail">
+      <div class="detail-overlay__backdrop" data-close-overlay="true"></div>
+      <article class="detail-overlay__panel detail-overlay__panel--gallery">
+        <button class="ghost-btn detail-overlay__close" type="button" data-close-overlay="true">Close</button>
+        <p class="eyebrow">Special Unlock</p>
+        <h2>${item.title}</h2>
+        <p class="subtle">${item.summary}</p>
+        <section class="gallery-manager">
+          <div class="gallery-manager__header">
+            <div>
+              <h3>Upload photos</h3>
+              <p>Photos added here stay saved in this site on this browser unless someone deletes them. Drag them around the board anywhere you want.</p>
+            </div>
+            <label class="primary-btn gallery-upload-btn" for="gallery-upload-input">Upload Photos</label>
+          </div>
+          <div class="gallery-manager__fields">
+            <label class="gallery-field">
+              <span>Contribution date</span>
+              <input id="gallery-contribution-date" type="date" value="${todayInputValue()}" />
+            </label>
+            <label class="gallery-field gallery-field--note">
+              <span>Little note</span>
+              <textarea id="gallery-note" rows="3" maxlength="220" placeholder="A tiny note about this photo..."></textarea>
+            </label>
+          </div>
+          <input id="gallery-upload-input" class="gallery-upload-input" type="file" accept="image/*" multiple />
+          ${state.galleryStatus ? `<p class="status gallery-status">${state.galleryStatus}</p>` : ''}
+        </section>
+        <section class="gallery-board" id="gallery-board" aria-label="Uploaded gallery photo board">
+          ${state.galleryLoading ? '<p class="gallery-loading">Loading saved photos...</p>' : photosMarkup}
+        </section>
+      </article>
+    </aside>
+  `;
+}
+
 function connectionMarkup() {
   return `
     <svg class="constellation-lines" id="constellation-lines" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
@@ -466,31 +856,37 @@ function nodeMarkup(item) {
   `;
 }
 
-function systemNodeMarkup(chapterId) {
-  const satellites = CHAPTER_SYSTEMS.get(chapterId) || [];
-  const chapter = sectionById.get(chapterId);
-  const unlocked = isUnlocked(chapter);
+function systemNodeMarkup() {
+  const chapterIds = state.systemId ? [state.systemId] : YEAR_CHAPTERS.map((chapter) => chapter.id);
 
-  return satellites
-    .map(
-      (item) => `
-        <button
-          class="memory-node memory-node--satellite ${unlocked ? 'is-unlocked' : 'is-locked'} size-small kind-${item.kind} ${state.selectedId === item.id ? 'is-selected' : ''}"
-          type="button"
-          data-satellite-id="${item.id}"
-          data-open-id="${unlocked ? item.id : ''}"
-          ${unlocked ? '' : 'aria-disabled="true"'}
-        >
-          <span class="memory-node__shape" aria-hidden="true">
-            <span class="memory-node__core"></span>
-          </span>
-          <span class="memory-node__label">
-            <strong>${item.title}</strong>
-            <small>${chapter?.title || 'Chapter orbit'}</small>
-          </span>
-        </button>
-      `
-    )
+  return chapterIds
+    .flatMap((chapterId) => {
+      const satellites = CHAPTER_SYSTEMS.get(chapterId) || [];
+      const chapter = sectionById.get(chapterId);
+
+      return satellites.map(
+        (item) => {
+          const unlocked = isDetailUnlocked(item);
+          return `
+          <button
+            class="memory-node memory-node--satellite ${unlocked ? 'is-unlocked' : 'is-locked'} size-small kind-${item.kind} ${state.selectedId === item.id ? 'is-selected' : ''}"
+            type="button"
+            data-satellite-id="${item.id}"
+            data-open-id="${unlocked ? item.id : ''}"
+            ${unlocked ? '' : 'aria-disabled="true"'}
+          >
+            <span class="memory-node__shape" aria-hidden="true">
+              <span class="memory-node__core"></span>
+            </span>
+            <span class="memory-node__label">
+              <strong>${item.title}</strong>
+              <small>${chapter?.title || 'Chapter orbit'}</small>
+            </span>
+          </button>
+        `;
+        }
+      );
+    })
     .join('');
 }
 
@@ -499,6 +895,8 @@ function chapterSystemPanelMarkup() {
   const chapter = sectionById.get(state.systemId);
   const satellites = CHAPTER_SYSTEMS.get(state.systemId) || [];
   if (!chapter) return '';
+  const showConstructionNotice = chapter.id === CHAPTER_SATELLITES_UNDER_CONSTRUCTION_ID;
+  const chapterDetailUnlocked = isDetailUnlocked(chapter);
 
   return `
     <section class="chapter-system overlay-panel overlay-panel--system" aria-label="Focused chapter system">
@@ -511,23 +909,46 @@ function chapterSystemPanelMarkup() {
         <button class="ghost-btn" type="button" data-close-system="true">Back Out</button>
       </div>
       <div class="chapter-system__actions">
-        <button class="archive-index__item is-unlocked chapter-system__core-btn" type="button" data-open-detail="${chapter.id}">
+        <button
+          class="archive-index__item ${chapterDetailUnlocked ? 'is-unlocked' : 'is-locked'} chapter-system__core-btn"
+          type="button"
+          data-open-id="${chapterDetailUnlocked ? chapter.id : ''}"
+          data-index-id="${chapter.id}"
+        >
           <span class="archive-index__meta">${chapter.year}</span>
           <strong>Open Main Chapter</strong>
-          <small>${chapter.summary}</small>
+          <small>${chapterDetailUnlocked ? chapter.summary : 'Opening soon.'}</small>
         </button>
       </div>
+      ${
+        showConstructionNotice
+          ? `
+            <div class="archive-construction">
+              <div class="construction-banner" aria-label="Chapter memories under construction notice">
+                <span>Under Construction</span>
+              </div>
+              <p class="section-note">The main chapter and the smaller memories orbiting Chapter 2026 are still being assembled.</p>
+            </div>
+          `
+          : ''
+      }
       <div class="chapter-system__list">
         ${satellites
-          .map(
-            (item) => `
-              <button class="archive-index__item is-unlocked chapter-system__item" type="button" data-open-detail="${item.id}">
+          .map((item) => {
+            const unlocked = isDetailUnlocked(item);
+            return `
+              <button
+                class="archive-index__item ${unlocked ? 'is-unlocked' : 'is-locked'} chapter-system__item"
+                type="button"
+                data-open-id="${unlocked ? item.id : ''}"
+                data-index-id="${item.id}"
+              >
                 <span class="archive-index__meta">Orbit</span>
                 <strong>${item.title}</strong>
                 <small>${item.summary}</small>
               </button>
-            `
-          )
+            `;
+          })
           .join('')}
       </div>
     </section>
@@ -538,6 +959,7 @@ function overlayMarkup() {
   if (!state.selectedId) return '';
   const item = detailById(state.selectedId);
   if (!item || !isDetailUnlocked(item)) return '';
+  if (item.id === GALLERY_SPECIAL_ID) return galleryDetailMarkup(item);
   const content = Array.isArray(item.content) ? item.content : [];
   const art = item.art ? `<img class="detail-art" src="${item.art}" alt="Memory image for ${item.title}" />` : '';
 
@@ -565,7 +987,7 @@ function vaultMarkup() {
   const nextYear = YEAR_CHAPTERS.find((item) => !isUnlocked(item));
 
   return `
-    <section class="vault-view">
+    <section class="vault-view ${state.systemId ? 'is-system-focus' : ''}">
       <div class="void-glow" aria-hidden="true"></div>
       <div class="gate-particles is-soft" aria-hidden="true">${particlesMarkup(28)}</div>
 
@@ -578,7 +1000,7 @@ function vaultMarkup() {
             ${connectionMarkup()}
             <div class="memory-nodes">
               ${sections.map((item) => nodeMarkup(item)).join('')}
-              ${state.systemId ? systemNodeMarkup(state.systemId) : ''}
+              ${systemNodeMarkup()}
             </div>
           </div>
         </div>
@@ -606,6 +1028,7 @@ function vaultMarkup() {
             </div>
             <p class="section-note">Use this list when you want the constellation feel without guessing what each object represents.</p>
           </div>
+          ${state.status ? `<p class="status archive-status">${state.status}</p>` : ''}
           <div class="archive-index__grid">
             ${sections
               .map((item) => {
@@ -817,7 +1240,12 @@ function bindGlobalSecretListener() {
 function openSection(id) {
   if (!id) return;
   const section = detailById(id);
-  if (!section || !isDetailUnlocked(section)) return;
+  if (!section) return;
+  if (!isDetailUnlocked(section)) {
+    state.status = statusLabel(section);
+    render();
+    return;
+  }
   state.selectedId = id;
   state.panel = 'vault';
   render();
@@ -876,8 +1304,20 @@ function bindConstellationMotion() {
   if (!stage || !camera) return;
 
   motionState.dragging = false;
+  camera.style.setProperty('--cam-x', `${motionState.camX.toFixed(2)}px`);
+  camera.style.setProperty('--cam-y', `${motionState.camY.toFixed(2)}px`);
+  camera.style.setProperty('--cam-zoom', motionState.camZoom.toFixed(3));
 
   const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+  const setZoom = (nextZoom) => {
+    motionState.zoom = clamp(nextZoom, 0.72, 1.85);
+  };
+  const pointerDistance = () => {
+    const points = Array.from(motionState.activePointers.values());
+    if (points.length < 2) return 0;
+    const [a, b] = points;
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  };
   const nodeEntries = sections
     .map((item) => {
       const el = stage.querySelector(`.memory-node[data-node-id="${item.id}"]`);
@@ -886,14 +1326,13 @@ function bindConstellationMotion() {
       return { item, el, pos };
     })
     .filter(Boolean);
-  const satelliteEntries = state.systemId
-    ? (CHAPTER_SYSTEMS.get(state.systemId) || [])
-        .map((item) => {
-          const el = stage.querySelector(`.memory-node[data-satellite-id="${item.id}"]`);
-          return el ? { item, el } : null;
-        })
-        .filter(Boolean)
-    : [];
+  const visibleSatellites = state.systemId ? CHAPTER_SYSTEMS.get(state.systemId) || [] : Array.from(CHAPTER_SYSTEMS.values()).flat();
+  const satelliteEntries = visibleSatellites
+    .map((item) => {
+      const el = stage.querySelector(`.memory-node[data-satellite-id="${item.id}"]`);
+      return el ? { item, el } : null;
+    })
+    .filter(Boolean);
 
   const lineEntries = NETWORK_CONNECTIONS.map(([from, to]) => {
     const el = stage.querySelector(`.constellation-line[data-link-from="${from}"][data-link-to="${to}"]`);
@@ -913,6 +1352,15 @@ function bindConstellationMotion() {
   const hoverNeighbors = motionState.hoveredId ? neighborMap.get(motionState.hoveredId) || new Set() : new Set();
 
   stage.addEventListener('pointerdown', (event) => {
+    motionState.activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (motionState.activePointers.size === 2) {
+      motionState.pinchDistance = pointerDistance();
+      motionState.pinchZoomStart = motionState.zoom;
+      motionState.dragging = false;
+      motionState.dragMoved = false;
+      stage.classList.remove('is-dragging');
+      return;
+    }
     if (event.target.closest('.memory-node, .overlay-panel, .detail-overlay__panel, .hidden-star, .shooting-star')) {
       return;
     }
@@ -925,6 +1373,22 @@ function bindConstellationMotion() {
   });
 
   stage.addEventListener('pointermove', (event) => {
+    if (motionState.activePointers.has(event.pointerId)) {
+      motionState.activePointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    }
+
+    if (motionState.activePointers.size >= 2) {
+      const nextDistance = pointerDistance();
+      if (motionState.pinchDistance > 0 && nextDistance > 0) {
+        const ratio = nextDistance / motionState.pinchDistance;
+        setZoom(motionState.pinchZoomStart * ratio);
+      }
+      motionState.dragging = false;
+      motionState.dragMoved = false;
+      stage.classList.remove('is-dragging');
+      return;
+    }
+
     const rect = stage.getBoundingClientRect();
     const nx = clamp((event.clientX - rect.left) / rect.width, 0, 1);
     const ny = clamp((event.clientY - rect.top) / rect.height, 0, 1);
@@ -949,13 +1413,39 @@ function bindConstellationMotion() {
     stage.classList.remove('is-dragging');
   };
 
-  stage.addEventListener('pointerup', stopDrag);
-  stage.addEventListener('pointercancel', stopDrag);
+  const clearPointer = (event) => {
+    motionState.activePointers.delete(event.pointerId);
+    if (motionState.activePointers.size < 2) {
+      motionState.pinchDistance = 0;
+      motionState.pinchZoomStart = motionState.zoom;
+    }
+  };
+
+  stage.addEventListener('pointerup', (event) => {
+    clearPointer(event);
+    stopDrag();
+  });
+  stage.addEventListener('pointercancel', (event) => {
+    clearPointer(event);
+    stopDrag();
+  });
   stage.addEventListener('mouseleave', () => {
     motionState.cursorYaw = 0;
     motionState.cursorPitch = 0;
+    motionState.activePointers.clear();
+    motionState.pinchDistance = 0;
     stopDrag();
   });
+  stage.addEventListener(
+    'wheel',
+    (event) => {
+      if (event.target.closest('.overlay-panel, .detail-overlay__panel')) return;
+      event.preventDefault();
+      const zoomDelta = event.deltaY > 0 ? -0.08 : 0.08;
+      setZoom(motionState.zoom + zoomDelta);
+    },
+    { passive: false }
+  );
   stage.addEventListener('dblclick', (event) => {
     if (event.target.closest('.memory-node, .overlay-panel, .detail-overlay__panel')) return;
     unlockAchievement('empty_space_comet');
@@ -1027,7 +1517,9 @@ function bindConstellationMotion() {
     lastTime = time;
 
     const baseTurn = (Math.PI * 2) / 86;
-    const selectedLayout = state.systemId ? NODE_LAYOUT[state.systemId] : state.selectedId ? NODE_LAYOUT[state.selectedId] : null;
+    const selectedItem = state.selectedId ? detailById(state.selectedId) : null;
+    const focusId = selectedItem?.type === 'satellite' ? state.selectedId : state.systemId || state.selectedId;
+    const selectedLayout = focusId ? NODE_LAYOUT[focusId] || (state.systemId ? NODE_LAYOUT[state.systemId] : null) : null;
     const isFocused = Boolean(state.systemId || state.selectedId);
     const boosted = Date.now() < motionState.speedBoostUntil ? 1.85 : 1;
     const speedMultiplier = (isFocused ? 0 : motionState.hoveredId ? 0.45 : 1) * boosted;
@@ -1045,50 +1537,83 @@ function bindConstellationMotion() {
     const cosX = Math.cos(totalPitch);
     const sinX = Math.sin(totalPitch);
 
-    const rotatePoint = (point) => {
-      const x1 = point.x * cosY - point.z * sinY;
-      const z1 = point.x * sinY + point.z * cosY;
-      const y2 = point.y * cosX - z1 * sinX;
-      const z2 = point.y * sinX + z1 * cosX;
-      return { x: x1, y: y2, z: z2 };
+    const rotatePoint = (point, pivot) => {
+      const anchor = pivot || { x: 0, y: 0, z: 0 };
+      const offsetX = point.x - anchor.x;
+      const offsetY = point.y - anchor.y;
+      const offsetZ = point.z - anchor.z;
+      const x1 = offsetX * cosY - offsetZ * sinY;
+      const z1 = offsetX * sinY + offsetZ * cosY;
+      const y2 = offsetY * cosX - z1 * sinX;
+      const z2 = offsetY * sinX + z1 * cosX;
+      return {
+        x: x1 + anchor.x,
+        y: y2 + anchor.y,
+        z: z2 + anchor.z
+      };
     };
 
-    const projectedPoints = new Map();
-    nodeEntries.forEach(({ item, el, pos }, index) => {
-      const bob = Math.sin(time * 0.0005 + index * 0.8) * 10;
-      const sway = Math.cos(time * 0.00036 + index * 0.9) * 6;
-      const basePoint = {
+    const rawNodePoints = new Map();
+    nodeEntries.forEach(({ item, pos }, index) => {
+      const isRotationAnchor = focusId === item.id || state.systemId === item.id;
+      const bob = isRotationAnchor ? 0 : Math.sin(time * 0.0005 + index * 0.8) * 10;
+      const sway = isRotationAnchor ? 0 : Math.cos(time * 0.00036 + index * 0.9) * 6;
+      rawNodePoints.set(item.id, {
         x: pos.x + sway,
         y: pos.y + bob,
         z: pos.z
-      };
-      const point = rotatePoint(basePoint);
+      });
+    });
+
+    const rawSatellitePoints = new Map();
+    satelliteEntries.forEach(({ item }, index) => {
+      const parentBasePoint = rawNodePoints.get(item.parentId);
+      if (!parentBasePoint) return;
+      const isSelectedSatellite = state.selectedId === item.id;
+      const angle = isSelectedSatellite ? item.phase : time * 0.00055 * item.orbitSpeed + item.phase;
+      const wobbleAmount = item.orbitWobble ?? 6;
+      const orbitStretch = item.orbitStretch ?? 1;
+      const orbitDepth = item.orbitDepth ?? 0.46;
+      const orbitTilt = item.orbitTilt ?? 0;
+      const wobble = isSelectedSatellite ? 0 : Math.sin(time * 0.0008 + index * 1.1) * wobbleAmount;
+      const orbitX = Math.cos(angle) * item.orbitRadius * orbitStretch;
+      const orbitY = Math.sin(angle * 1.3 + item.phase) * item.orbitHeight + wobble + (item.orbitLift ?? 0);
+      const orbitZ = Math.sin(angle) * item.orbitRadius * orbitDepth;
+      const tiltedY = orbitY * Math.cos(orbitTilt) - orbitZ * Math.sin(orbitTilt);
+      const tiltedZ = orbitY * Math.sin(orbitTilt) + orbitZ * Math.cos(orbitTilt);
+      rawSatellitePoints.set(item.id, {
+        x: parentBasePoint.x + orbitX,
+        y: parentBasePoint.y + tiltedY,
+        z: parentBasePoint.z + tiltedZ
+      });
+    });
+
+    const rotationPivot = selectedLayout ? rawSatellitePoints.get(focusId) || rawNodePoints.get(focusId) || null : null;
+    const projectedPoints = new Map();
+    const satelliteProjectedPoints = new Map();
+    nodeEntries.forEach(({ item, el, pos }, index) => {
+      const basePoint = rawNodePoints.get(item.id);
+      const point = rotatePoint(basePoint, rotationPivot);
       const projected = project(point, width, height, camDist);
       projectedPoints.set(item.id, { projected, point, basePoint });
 
       const baseScale = pos.size === 'large' ? 1.1 : pos.size === 'medium' ? 0.92 : 0.8;
       const totalScale = Math.max(0.55, Math.min(1.48, baseScale * projected.scale));
       el.style.transform = `translate3d(${projected.x.toFixed(2)}px, ${projected.y.toFixed(2)}px, 0) translate(-50%, -50%) scale(${totalScale.toFixed(3)})`;
-      el.style.zIndex = `${Math.round(1000 + point.z)}`;
+      el.style.zIndex = `${Math.round(1000 - point.z)}`;
       el.style.opacity = state.systemId ? (item.id === state.systemId ? '1' : item.type === 'year' ? '0.18' : '0.1') : '1';
     });
 
-    const focusedChapter = state.systemId ? projectedPoints.get(state.systemId) : null;
     satelliteEntries.forEach(({ item, el }, index) => {
-      if (!focusedChapter) return;
-      const angle = time * 0.00055 * item.orbitSpeed + item.phase;
-      const wobble = Math.sin(time * 0.0008 + index * 1.1) * 6;
-      const basePoint = {
-        x: focusedChapter.basePoint.x + Math.cos(angle) * item.orbitRadius,
-        y: focusedChapter.basePoint.y + Math.sin(angle * 1.3 + item.phase) * item.orbitHeight + wobble,
-        z: focusedChapter.basePoint.z + Math.sin(angle) * item.orbitRadius * 0.46
-      };
-      const point = rotatePoint(basePoint);
+      const basePoint = rawSatellitePoints.get(item.id);
+      if (!basePoint) return;
+      const point = rotatePoint(basePoint, rotationPivot);
       const projected = project(point, width, height, camDist);
       const totalScale = Math.max(0.48, Math.min(1.12, 0.58 * projected.scale));
+      satelliteProjectedPoints.set(item.id, { projected, point, basePoint });
 
       el.style.transform = `translate3d(${projected.x.toFixed(2)}px, ${projected.y.toFixed(2)}px, 0) translate(-50%, -50%) scale(${totalScale.toFixed(3)})`;
-      el.style.zIndex = `${Math.round(1250 + point.z)}`;
+      el.style.zIndex = `${Math.round(1250 - point.z)}`;
       el.style.opacity = '1';
     });
 
@@ -1110,23 +1635,32 @@ function bindConstellationMotion() {
     let targetX = 0;
     let targetY = 0;
     let targetZoom = 1;
+    let focusedPoint = null;
+    let centerStrength = 1;
 
     if (selectedLayout) {
-      const focusId = state.systemId || state.selectedId;
-      const focused = projectedPoints.get(focusId);
-      if (focused) {
-        const centerStrength = state.systemId ? 0.9 : 1;
-        targetX = (width / 2 - focused.projected.x) * centerStrength;
-        targetY = (height / 2 - focused.projected.y) * centerStrength;
-      }
-      targetZoom = state.systemId ? 1.24 : 1.14;
+      focusedPoint = projectedPoints.get(focusId) || satelliteProjectedPoints.get(focusId);
+      centerStrength = selectedItem?.type === 'satellite' ? 1 : state.systemId ? 0.9 : 1;
+      targetZoom = selectedItem?.type === 'satellite' ? 1.2 : state.systemId ? 1.24 : 1.14;
     } else if (motionState.hoveredId) {
       targetZoom = Math.max(targetZoom, 1.02);
     }
 
-    camera.style.setProperty('--cam-x', `${targetX.toFixed(2)}px`);
-    camera.style.setProperty('--cam-y', `${targetY.toFixed(2)}px`);
-    camera.style.setProperty('--cam-zoom', targetZoom.toFixed(3));
+    targetZoom *= motionState.zoom;
+
+    if (focusedPoint) {
+      targetX = (width / 2 - focusedPoint.projected.x) * centerStrength * targetZoom;
+      targetY = (height / 2 - focusedPoint.projected.y) * centerStrength * targetZoom;
+    }
+
+    const cameraEase = 1 - Math.exp(-delta * 6.2);
+    motionState.camX += (targetX - motionState.camX) * cameraEase;
+    motionState.camY += (targetY - motionState.camY) * cameraEase;
+    motionState.camZoom += (targetZoom - motionState.camZoom) * cameraEase;
+
+    camera.style.setProperty('--cam-x', `${motionState.camX.toFixed(2)}px`);
+    camera.style.setProperty('--cam-y', `${motionState.camY.toFixed(2)}px`);
+    camera.style.setProperty('--cam-zoom', motionState.camZoom.toFixed(3));
 
     motionFrame = window.requestAnimationFrame(loop);
   };
@@ -1144,9 +1678,10 @@ function bindVaultEvents() {
       if (!id) {
         const nodeId = button.getAttribute('data-node-id');
         const indexId = button.getAttribute('data-index-id');
-        const lookupId = nodeId || indexId;
-        const item = lookupId ? sectionById.get(lookupId) : null;
-        state.status = item ? lockLabel(item) : 'Locked for now.';
+        const satelliteId = button.getAttribute('data-satellite-id');
+        const lookupId = nodeId || indexId || satelliteId;
+        const item = lookupId ? detailById(lookupId) : null;
+        state.status = item ? statusLabel(item) : 'Locked for now.';
         render();
         return;
       }
@@ -1154,6 +1689,11 @@ function bindVaultEvents() {
       const item = detailById(id);
       if (item?.type === 'year') {
         if (state.systemId === id) {
+          if (!isDetailUnlocked(item)) {
+            state.status = statusLabel(item);
+            render();
+            return;
+          }
           openSection(id);
           return;
         }
@@ -1321,6 +1861,87 @@ function bindVaultEvents() {
     openAchievements();
   });
 
+  document.getElementById('gallery-upload-input')?.addEventListener('change', async (event) => {
+    const input = event.currentTarget;
+    const note = document.getElementById('gallery-note')?.value || '';
+    const contributedOn = document.getElementById('gallery-contribution-date')?.value || todayInputValue();
+    await handleGalleryUpload(input.files, { note, contributedOn });
+    input.value = '';
+  });
+
+  app.querySelectorAll('[data-delete-gallery-photo]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (motionState.dragMoved) return;
+      const id = button.getAttribute('data-delete-gallery-photo');
+      await handleGalleryDelete(id);
+    });
+  });
+
+  const galleryBoard = document.getElementById('gallery-board');
+  if (galleryBoard) {
+    let activeDrag = null;
+
+    const finishDrag = async () => {
+      if (!activeDrag) return;
+      const { id, card, boardX, boardY, baseZIndex } = activeDrag;
+      card.classList.remove('is-dragging');
+      card.style.zIndex = baseZIndex;
+      activeDrag = null;
+      await updateGalleryPhotoLayout(id, { boardX, boardY });
+    };
+
+    app.querySelectorAll('.gallery-photo-card[data-gallery-photo-id]').forEach((card, index) => {
+      card.style.zIndex = `${100 + index}`;
+
+      card.addEventListener('pointerdown', (event) => {
+        if (event.target.closest('button, input, textarea, label')) return;
+
+        const boardRect = galleryBoard.getBoundingClientRect();
+        const photoId = card.getAttribute('data-gallery-photo-id');
+        const photo = state.galleryPhotos.find((entry) => entry.id === photoId);
+        const placement = galleryPlacement(photo, index);
+        const anchorX = boardRect.left + (placement.boardX / 100) * boardRect.width;
+        const anchorY = boardRect.top + (placement.boardY / 100) * boardRect.height;
+
+        activeDrag = {
+          id: photoId,
+          card,
+          pointerId: event.pointerId,
+          baseZIndex: card.style.zIndex || `${100 + index}`,
+          offsetX: event.clientX - anchorX,
+          offsetY: event.clientY - anchorY,
+          boardX: placement.boardX,
+          boardY: placement.boardY
+        };
+
+        card.classList.add('is-dragging');
+        card.style.zIndex = '999';
+        card.setPointerCapture?.(event.pointerId);
+        event.preventDefault();
+      });
+
+      card.addEventListener('pointermove', (event) => {
+        if (!activeDrag || activeDrag.pointerId !== event.pointerId) return;
+        const boardRect = galleryBoard.getBoundingClientRect();
+        const nextX = ((event.clientX - boardRect.left - activeDrag.offsetX) / boardRect.width) * 100;
+        const nextY = ((event.clientY - boardRect.top - activeDrag.offsetY) / boardRect.height) * 100;
+        activeDrag.boardX = Math.max(10, Math.min(90, nextX));
+        activeDrag.boardY = Math.max(12, Math.min(88, nextY));
+        activeDrag.card.style.left = `${activeDrag.boardX}%`;
+        activeDrag.card.style.top = `${activeDrag.boardY}%`;
+      });
+
+      const endPointerDrag = async (event) => {
+        if (!activeDrag || activeDrag.pointerId !== event.pointerId) return;
+        card.releasePointerCapture?.(event.pointerId);
+        await finishDrag();
+      };
+
+      card.addEventListener('pointerup', endPointerDrag);
+      card.addEventListener('pointercancel', endPointerDrag);
+    });
+  }
+
   bindConstellationMotion();
 }
 
@@ -1336,7 +1957,7 @@ function bindEntranceEvents() {
   });
 }
 
-function render() {
+function performRender() {
   stopConstellationMotion();
   applyViewClass();
 
@@ -1363,6 +1984,21 @@ function render() {
   bindVaultEvents();
 }
 
+function render() {
+  if (!viewTransitionActive && typeof document.startViewTransition === 'function') {
+    viewTransitionActive = true;
+    const transition = document.startViewTransition(() => {
+      performRender();
+    });
+    transition.finished.catch(() => {}).finally(() => {
+      viewTransitionActive = false;
+    });
+    return;
+  }
+
+  performRender();
+}
+
 window.addEventListener('mousemove', (event) => {
   const x = (event.clientX / window.innerWidth) * 100;
   const y = (event.clientY / window.innerHeight) * 100;
@@ -1386,4 +2022,5 @@ window.addEventListener('keydown', (event) => {
 });
 
 bindGlobalSecretListener();
+loadGalleryPhotos();
 render();
